@@ -95,24 +95,368 @@ function applyTheme() {
 $('themeLight').addEventListener('click', () => { S.theme = 'light'; save(); applyTheme(); });
 $('themeDark').addEventListener('click', () => { S.theme = 'dark'; save(); applyTheme(); });
 
-function parseLines(text){
-  const out = [];
-  for(let line of text.split(/\r?\n/)){
-    line = line.trim();
-    if(!line || line.includes('墨墨四级') || line.includes('<table>')) continue;
-    if(line.includes('\t')){
-      const parts = line.split('\t').map(s=>s.trim()).filter(Boolean);
-      if(parts.length >= 2){ out.push({ en: parts[0], zh: parts[1] }); continue; }
-    }
-    const match = line.match(/^([A-Za-z][A-Za-z\s'’\-\.]*?)(?=[\u4e00-\u9fa5]|\[|n\.|v\.|adj\.|adv\.|prep\.|conj\.|pron\.)(.*)$/);
-    if(match){
-      let en = match[1].trim(); let zh = match[2].trim();
-      zh = zh.replace(/\[[^\]]+\]/g, '').trim(); out.push({ en: en, zh: zh });
-    } else if(/^[A-Za-z\s'’\-\.]+$/.test(line)) { out.push({ en: line, zh: '' }); }
-  }
-  return out;
+// ===== parseLines start =====
+// 通用背单词文本解析：不针对任何单一品牌/数据源，尽量从脏 PDF/Word 文本中还原 {en, zh}。
+// 下面两条注释标记同时供 Node 测试脚本按区间抽取真实函数，避免测试代码和线上代码分叉。
+const CJK_RE = /[㐀-䶿一-鿿豈-﫿]/;
+const POS_WORDS = ['n', 'v', 'vt', 'vi', 'adj', 'adv', 'prep', 'conj', 'pron', 'num', 'art', 'int', 'aux', 'abbr', 'phr', 'pl', 'modal'];
+const POS_SET = new Set(POS_WORDS);
+const POS_ALT = '(?:' + POS_WORDS.join('|') + ')';
+const POS_START_RE = new RegExp('^\\s*(?:' + POS_ALT + '\\.\\s*(?:[&/,，、]\\s*)?)+', 'i');
+const POS_ONLY_RE = new RegExp('^(?:' + POS_ALT + '\\.\\s*(?:[&/,，、]\\s*)?)+$', 'i');
+const STRONG_EVIDENCE_RE = new RegExp('^\\s*(?:[\\[\\(（\\/][^\\]\\)\\/]{0,80}[\\]\\)\\/]|' + POS_ALT + '\\.)', 'i');
+const HEAD_RE = new RegExp(
+  "[A-Za-z][A-Za-z'’\\-]*(?:\\s+(?!" + POS_ALT + "\\.)(?!" + POS_ALT + "\\s*[\\u4e00-\\u9fff])[A-Za-z][A-Za-z'’\\-]*){0,3}",
+  'g'
+);
+const SENTENCE_START_WORDS = new Set([
+  'he', 'she', 'it', 'they', 'we', 'you', 'i', 'the', 'a', 'an',
+  'this', 'that', 'these', 'those', 'his', 'her', 'their', 'my',
+  'our', 'your', 'its', 'there', 'here'
+]);
+const FUNCTION_WORDS = new Set([
+  'he', 'she', 'it', 'they', 'we', 'you', 'i', 'the', 'a', 'an',
+  'this', 'that', 'these', 'those', 'his', 'her', 'their', 'my',
+  'our', 'your', 'its', 'there', 'here', 'and', 'or', 'but', 'if',
+  'when', 'while', 'because', 'so', 'not', 'no', 'is', 'are', 'was',
+  'were', 'be', 'been', 'am', 'have', 'has', 'had', 'do', 'does',
+  'did', 'will', 'would', 'can', 'could', 'should', 'may', 'might',
+  'must', 'as', 'than', 'then'
+]);
+
+function hasCJK(s) {
+  return CJK_RE.test(String(s || ''));
 }
 
+function normalizeRawText(text) {
+  let s = String(text == null ? '' : text);
+  s = s.replace(/<br\s*\/?>/gi, '\n');
+  s = s.replace(/<\/(?:p|div|tr|li|h[1-6]|section|article|table|ul|ol|dl|blockquote)\s*>/gi, '\n');
+  s = s.replace(/<\/t[dh]\s*>/gi, '\t');
+  s = s.replace(/<[^>]*>/g, ' ');
+  s = s.replace(/&nbsp;|&#160;/gi, ' ');
+  s = s.replace(/&amp;/gi, '&');
+  s = s.replace(/&lt;/gi, '<');
+  s = s.replace(/&gt;/gi, '>');
+  s = s.replace(/&quot;/gi, '"');
+  s = s.replace(/&#39;|&apos;/gi, "'");
+  s = s.replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)));
+  s = s.replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n, 10)));
+  // 全角字母/数字 + 结构化标点统一成半角；保留中文逗号、分号、问号等中文标点
+  s = s.replace(/[０-９Ａ-Ｚａ-ｚ]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0));
+  s = s.replace(/[（）：．／［］｛｝－＋＠｜～]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0));
+  s = s.replace(new RegExp("[" + String.fromCharCode(0x3000, 0x00A0, 0x2000) + "-" + String.fromCharCode(0x200B, 0x202F, 0x205F) + "]", "g"), " ");
+  s = s.replace(/\t+/g, '\t');
+  s = s.replace(/[ \f\v]+/g, ' ');
+  return s;
+}
+
+function stripNumbering(line) {
+  let s = String(line || '').trim();
+  s = s.replace(/^[\s①-⑳❶-➓]+/, '');
+  s = s.replace(/^[\(（\[【]\s*\d{1,4}\s*[\)）\]】]\s*/, '');
+  s = s.replace(/^\d{1,4}\s*[.、)）:：\-—]\s*/, '');
+  s = s.replace(/^\d{2,4}\s+/, '');
+  return s.trim();
+}
+
+function preCleanLine(line) {
+  let s = String(line || '').replace(/\t+/g, ' ').trim();
+  s = stripNumbering(s);
+  s = s.replace(/^(?:单词|词条|英文|word)\s*[:：]\s*/i, '');
+  s = s.replace(/(?:释义|中文|词义|meaning)\s*[:：]\s*/gi, '');
+  s = s.replace(/(?:音标|phonetic)\s*[:：]\s*/gi, '');
+  s = s.replace(/^(?:unit|lesson|chapter|section|part)\s*\d+\s*[:.\-—–]*\s*/i, '');
+  s = s.replace(/^(?:word\s*list|vocabulary|list)\s*\d+\s*[:.\-—–]*\s*/i, '');
+  s = s.replace(/^(?:墨墨背单词|考研词汇|考研英语|四级词汇|六级词汇|雅思词汇|托福词汇|GRE词汇|专四词汇|专八词汇|高频词汇|核心词汇|单词表|词汇表)\s*[|:：\-—–]*\s*/i, '');
+  return s.trim();
+}
+
+function isNoiseLine(line) {
+  const s = String(line || '').trim();
+  if (!s) return true;
+  if (/^[\s\-—–_=*·•.。,，;；:：!！?？'"“”‘’()（）\[\]【】<>《》]+$/.test(s)) return true;
+  if (/^[①-⑳❶-➓]$/.test(s)) return true;
+  if (/^[-—–\s]*\d{1,4}[-—–\s]*$/.test(s)) return true;
+  if (/^\d{1,4}\s*[.、)）]?\s*$/.test(s)) return true;
+  if (/^第\s*\d+\s*页(?:\s*[/,，]?\s*共\s*\d+\s*页)?$/.test(s)) return true;
+  if (/^page\s*\d+(?:\s*(?:of|\/)\s*\d+)?$/i.test(s)) return true;
+  if (/^\d+\s*\/\s*\d+$/.test(s)) return true;
+  if (/^(?:unit|lesson|chapter|section|part)\s*\d+$/i.test(s)) return true;
+  if (/^(?:word\s*list|vocabulary|english\s+vocabulary)(?:\s*\d+)?$/i.test(s)) return true;
+  if (/^list\s*\d+$/i.test(s)) return true;
+
+  const compact = s.replace(/\s+/g, '');
+  if (!/^[A-Za-z]/.test(compact) && compact.length <= 30 &&
+      /(?:墨墨背单词|考研词汇|考研英语|四级词汇|六级词汇|雅思词汇|托福词汇|GRE词汇|专四词汇|专八词汇|高频词汇|核心词汇|单词表|词汇表|词汇书|背单词)/i.test(compact)) return true;
+  if (!/^[A-Za-z]/.test(s) && s.length <= 40 &&
+      /(?:微信公众号|公众号|扫码|二维码|QQ群|微信群|更多资料|仅供学习|关注我们|侵权|转载)/.test(s)) return true;
+  return false;
+}
+
+function isPhoneticOnly(line) {
+  const s = String(line || '').trim();
+  if (!s || hasCJK(s) || s.length > 80) return false;
+  const wrapped = s.match(/^[\[\(\/]([^\]\)\/]{1,78})[\]\)\/]$/);
+  if (wrapped) {
+    const inner = wrapped[1].trim();
+    if (/[ˈˌəɛɔɪʊæɑɒʌθðʃʒŋɜɞɐɨʉɯɤɵøœɶː]/.test(inner)) return true;
+    if (!/[A-Za-z]/.test(inner)) return true;
+    if (/^[A-Za-z'’\-\s]+$/.test(inner) && inner.length <= 20) {
+      const parts = inner.split(/[\s\-]+/).filter(Boolean);
+      if (parts.every(w => w.length <= 3)) return true;
+    }
+    return false;
+  }
+  return /[ˈˌəɛɔɪʊæɑɒʌθðʃʒŋɜɞɐɨʉɯɤɵøœɶː]/.test(s) && !/[A-Za-z]{4,}/.test(s);
+}
+
+function isPosOnly(line) {
+  return POS_ONLY_RE.test(String(line || '').trim());
+}
+
+function hasDefEvidence(after, atStart) {
+  let s = String(after || '').replace(/^[\s:：\-—–,，;；|]+/, '');
+  if (atStart) s = s.replace(/^\.\s*/, '');
+  if (!s) return false;
+  const ph = s.match(/^[\[\(（\/][^\]）\/]{0,80}[\]）\/]/);
+  if (ph && !hasCJK(ph[0])) return true;
+  if (POS_START_RE.test(s)) return true;
+  if (CJK_RE.test(s.charAt(0))) return true;
+  if (/^[\(（【\[]\s*[^\)）】\]]{0,12}[一-鿿]/.test(s)) return true;
+  return false;
+}
+
+function isValidHead(en, after, atStart) {
+  const s = String(en || '').replace(/\s+/g, ' ').trim();
+  if (!s || s.length > 40) return false;
+  if (!/^[A-Za-z]/.test(s)) return false;
+  if (CJK_RE.test(s) || /\d/.test(s)) return false;
+  if (/[^A-Za-z'’\- ]/.test(s)) return false;
+  const words = s.split(' ');
+  if (!words.length || words.length > 4) return false;
+  if (words.some(w => !w || /^['’\-]/.test(w) || /['’\-]$/.test(w))) return false;
+  if (s.length === 1 && !/^[aAiI]$/.test(s)) return false;
+  if (words.length === 1 && POS_SET.has(s.toLowerCase()) && /^\s*\./.test(String(after || ''))) return false;
+  if (/([A-Za-z])\1{3,}/.test(s)) return false;
+
+  const first = words[0].toLowerCase();
+  if (words.length > 1 && SENTENCE_START_WORDS.has(first)) {
+    if (!atStart || !STRONG_EVIDENCE_RE.test(String(after || ''))) return false;
+  }
+  if (!atStart && words.length === 1 && FUNCTION_WORDS.has(first)) return false;
+  if (!hasDefEvidence(after, atStart)) return false;
+  return true;
+}
+
+function extractBareEnglish(line) {
+  const s = preCleanLine(line);
+  if (!/^[A-Za-z][A-Za-z'’\-]*(?:\s+[A-Za-z][A-Za-z'’\-]*){0,2}$/.test(s)) return '';
+  if (s.length > 40) return '';
+  const words = s.split(/\s+/);
+  if (words.length > 1 && SENTENCE_START_WORDS.has(words[0].toLowerCase())) return '';
+  if (words.length === 1 && /^(?:Unit|Lesson|Chapter|Page|Word|List|Vocabulary|Index|Contents|Appendix)$/.test(s)) return '';
+  if (/([A-Za-z])\1{3,}/.test(s)) return '';
+  if (words.length === 1 && POS_SET.has(s.toLowerCase()) && !/^(?:art|modal)$/i.test(s)) return '';
+  return s;
+}
+
+function findHead(line, from, allowAtStart) {
+  HEAD_RE.lastIndex = Math.max(0, from);
+  let m;
+  while ((m = HEAD_RE.exec(line))) {
+    const start = m.index;
+    const raw = m[0];
+    const end = start + raw.length;
+    if (start > 0 && /[A-Za-z'’\-]/.test(line.charAt(start - 1))) {
+      HEAD_RE.lastIndex = start + 1;
+      continue;
+    }
+    const before = line.slice(0, start).replace(/\s+$/, '');
+    const isAtStart = before.length === 0;
+    if (!isAtStart) {
+      const prev = before.slice(-1);
+      const prevOk = CJK_RE.test(prev) || /[0-9，,。；;、:：|/()（）\[\]【】\-—–]/.test(prev);
+      if (!prevOk) {
+        HEAD_RE.lastIndex = start + 1;
+        continue;
+      }
+    }
+    const atStart = isAtStart && !!allowAtStart;
+    if (!isValidHead(raw, line.slice(end), atStart)) {
+      HEAD_RE.lastIndex = start + 1;
+      continue;
+    }
+    return { en: raw.replace(/\s+/g, ' ').trim(), start: start, end: end };
+  }
+  return null;
+}
+
+function extractHeadOnly(line) {
+  const s = preCleanLine(line);
+  const head = findHead(s, 0, true);
+  if (!head) return null;
+  const extra = s.slice(head.end).trim();
+  if (hasCJK(extra)) return null;
+  return { en: head.en, extra: extra };
+}
+
+function cutChineseDefinition(zhRaw) {
+  let s = String(zhRaw || '');
+  const markerRe = /(?:【[^】]{1,12}】|\[(?:例|考|记|搭|派|同|反|近|辨|真)[^\]]{0,30}\]|(?:例句|例词|派生词?|同义词|反义词|近义词|搭配|短语|记忆法?|联想|扩展|辨析|真题|考点|用法|注意)\s*[:：])/;
+  const mk = s.match(markerRe);
+  if (mk && mk.index > 0) s = s.slice(0, mk.index);
+  const bareEx = s.search(/例句/);
+  if (bareEx > 0) s = s.slice(0, bareEx);
+
+  for (let i = 1; i < s.length; i++) {
+    if (!/[A-Za-z]/.test(s.charAt(i))) continue;
+    if (/[A-Za-z]/.test(s.charAt(i - 1))) continue;
+    const before = s.slice(0, i).replace(/\s+$/, '');
+    const prev = before.charAt(before.length - 1);
+    const prevOk = before.length === 0 || CJK_RE.test(prev) || /[0-9，,。；;、:：|/()（）\[\]【】\-—–]/.test(prev);
+    if (!prevOk) continue;
+
+    const tail = s.slice(i);
+    if (/^(?:e\.g|i\.e|etc|vs)\./i.test(tail)) continue;
+    if (/^[A-Za-z]\.(?:[A-Za-z]\.)+/.test(tail)) continue;
+    const w = tail.match(/^[A-Za-z][A-Za-z'’\-]*/);
+    if (w && /^[A-Z]{1,5}$/.test(w[0]) && /^\s*[一-鿿]/.test(tail.slice(w[0].length))) continue;
+    const h = findHead(s, i, false);
+    if (h && h.start === i) return { zh: s.slice(0, i), next: i };
+    return { zh: s.slice(0, i), next: -1 };
+  }
+  return { zh: s, next: Infinity };
+}
+
+function sanitizeEn(en) {
+  let s = String(en || '').replace(/\s+/g, ' ').trim();
+  s = s.replace(/^[^A-Za-z]+/, '');
+  s = s.replace(/[^A-Za-z'’\-]+$/, '');
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+function sanitizeZh(zh) {
+  let s = String(zh || '').replace(/[\t\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+  s = s.replace(/^\s*[\-—–,，;；:：|]+\s*/, '');
+  s = s.replace(/[\[\(（\/][^\]）\/]{0,80}[\]）\/]/g, m => (hasCJK(m) ? m : ' '));
+  s = s.replace(/\s+/g, ' ').trim();
+  s = s.replace(/[\s,，;；、:：\-—–]+$/, '').trim();
+  if (!hasCJK(s)) return '';
+  return s;
+}
+
+function parseLineEntries(rawLine) {
+  const entries = [];
+  const line = preCleanLine(rawLine);
+  if (!line) return entries;
+
+  let cursor = 0;
+  let guard = 0;
+  while (cursor < line.length && guard++ < 30) {
+    const head = findHead(line, cursor, true);
+    if (!head) break;
+
+    let after = line.slice(head.end);
+    let consumed = 0;
+
+    // 词后可能有多组音标（英音/美音），全部跳过
+    let phGuard = 0;
+    while (phGuard++ < 4) {
+      const ph = after.slice(consumed).match(/^\s*([\[\(（\/][^\]）\/]{0,80}[\]）\/])\s*/);
+      if (!ph || hasCJK(ph[1])) break;
+      consumed += ph[0].length;
+    }
+
+    let pos = '';
+    const posM = after.slice(consumed).match(POS_START_RE);
+    if (posM) {
+      pos = posM[0].trim();
+      consumed += posM[0].length;
+    }
+
+    const rest = after.slice(consumed);
+    const cjkIdx = rest.search(CJK_RE);
+    if (cjkIdx < 0) {
+      cursor = head.end;
+      continue;
+    }
+
+    const zhRaw = rest.slice(cjkIdx);
+    const cut = cutChineseDefinition(zhRaw);
+    const zh = sanitizeZh((pos ? pos + ' ' : '') + cut.zh);
+    if (zh) entries.push({ en: head.en, zh: zh });
+
+    if (cut.next === -1 || cut.next === Infinity) break;
+    const nextAbs = head.end + consumed + cjkIdx + cut.next;
+    if (nextAbs <= head.start) break;
+    cursor = nextAbs;
+  }
+  return entries;
+}
+
+function parseLines(text) {
+  if (text == null || text === '') return [];
+  const lines = normalizeRawText(text).split(/\r?\n/);
+  const out = [];
+  const seen = new Set();
+  let pending = null;
+
+  const push = (en, zh) => {
+    en = sanitizeEn(en);
+    zh = sanitizeZh(zh);
+    if (!en || !zh) return;
+    if (!/^[A-Za-z][A-Za-z'’\- ]*$/.test(en)) return;
+    if (CJK_RE.test(en) || /\d/.test(en)) return;
+    if (en.length > 40 || en.split(/\s+/).length > 4) return;
+    const key = en.toLowerCase().replace(/’/g, "'");
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ en: en, zh: zh });
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line || isNoiseLine(line)) continue;
+
+    // 纯英文词条行先挂起，等下一行出现音标/中文再合并
+    const bare = extractBareEnglish(line);
+    if (bare) {
+      pending = { en: bare, extra: [] };
+      continue;
+    }
+
+    if (isPhoneticOnly(line)) {
+      if (pending) pending.extra.push(line);
+      continue;
+    }
+
+    if (!hasCJK(line)) {
+      const headOnly = extractHeadOnly(line);
+      if (headOnly) {
+        pending = { en: headOnly.en, extra: headOnly.extra ? [headOnly.extra] : [] };
+      } else if (pending && isPosOnly(line)) {
+        pending.extra.push(line);
+      }
+      continue;
+    }
+
+    let combined = line;
+    if (pending) {
+      const lineHasHead = !!findHead(preCleanLine(line), 0, true);
+      if (!lineHasHead) {
+        combined = pending.en + ' ' + pending.extra.join(' ') + ' ' + line;
+      }
+      pending = null;
+    }
+
+    const entries = parseLineEntries(combined);
+    for (const e of entries) push(e.en, e.zh);
+  }
+
+  return out;
+}
+// ===== parseLines end =====
 function renderPreview(){
   const list = parseLines($('ta').value);
   if (!list.length) { $('preview').innerHTML = ''; return; }
