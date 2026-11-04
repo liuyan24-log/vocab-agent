@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="zh" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Vocab Agent</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <div class="tabs-wrap">
+      <button id="tabLearn" class="active">Learn</button>
+      <button id="tabTable">词库</button>
+      <button id="tabFav">收藏</button>
+    </div>
+    <button class="icon-btn" id="btnSettings">⚙️</button>
+  </header>
+
+  <main id="mainCard">
+    <div class="card" id="card">
+      <div class="en" id="en">请导入词库</div>
+      <div class="zh hide" id="zh"></div>
+    </div>
+  </main>
+  <div class="stat" id="stat"></div>
+
+  <div class="table-list" id="mainTable">
+    <div class="table-header">
+      <input type="text" class="search-bar" id="searchTable" placeholder="🔍 搜索词库...">
+      <div class="table-header-row">
+        <input type="number" id="inputRandomCount" placeholder="数量 (如 20)" style="flex: 1; margin: 0;" min="1">
+        <button class="btn-primary" id="btnRandomDraw" style="margin: 0; width: auto; padding: 10px 16px; background: var(--green);">🎲 抽取</button>
+      </div>
+      <div class="table-header-row" style="justify-content: space-between; flex-wrap: wrap;">
+        <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+          <button class="btn-small" id="btnToggleSelectMode">开启多选</button>
+          <button class="btn-small" id="btnSelectAll" style="display: none;">全选</button>
+          <button class="btn-small btn-danger" id="btnBatchDelete" style="display: none;">删除</button>
+          
+          <select class="batch-select" id="batchFavTarget" style="display: none;"></select>
+          <button class="btn-small" id="btnBatchAddFav" style="display: none; color: var(--blue); border-color: var(--blue);">加入</button>
+        </div>
+        <button class="btn-small" id="btnClearLearn" style="color: var(--red); border-color: var(--red);">清空 Learn</button>
+      </div>
+    </div>
+    <div class="table-content" id="tableListContent"></div>
+  </div>
+
+  <div class="table-list" id="mainFavList">
+    <div class="table-header">
+      <div class="table-header-row" style="justify-content: space-between;">
+        <h2 style="margin:0; font-size: 20px;">我的收藏夹</h2>
+        <button class="btn-primary" id="btnCreateFolder" style="width: auto; padding: 8px 16px; margin: 0; font-size: 14px;">+ 新建</button>
+      </div>
+    </div>
+    <div class="table-content" id="favListContent"></div>
+  </div>
+
+  <div class="table-list" id="mainFavManage">
+    <div class="table-header">
+      <div class="table-header-row" style="justify-content: space-between; margin-bottom: 5px;">
+        <button class="btn-small" id="btnBackToFavList">← 返回目录</button>
+        <h3 style="margin:0; font-size: 16px;" id="favManageTitle">管理夹子</h3>
+      </div>
+      <input type="text" class="search-bar" id="searchFav" placeholder="🔍 搜索当前夹子...">
+      <div class="table-header-row">
+        <button class="btn-small" id="btnFavSelectAll">全选</button>
+        <select class="batch-select" id="favMoveTarget" style="flex: 1;"></select>
+        <button class="btn-small" id="btnBatchMoveFav" style="color: var(--blue); border-color: var(--blue);">转移</button>
+        <button class="btn-small btn-danger" id="btnBatchRemoveFav">移除</button>
+      </div>
+    </div>
+    <div class="table-content" id="favManageContent"></div>
+  </div>
+
+  <!-- 底部只剩收藏和发音 -->
+  <footer id="mainFooter">
+    <button class="action-btn btn-fav" id="btnFav">☆</button>
+    <button class="action-btn btn-speak" id="btnSpeak">🔊</button>
+  </footer>
+
+  <div class="modal" id="modalImport">
+    <div class="modal-inner">
+      <h3 style="margin-top:0;">导入单词本</h3>
+      <textarea id="ta" placeholder="粘贴脏文本，或开启自动清洗..."></textarea>
+      <div id="cleanStatus" style="font-size: 12px; color: var(--sub); margin-bottom: 10px;">就绪</div>
+      <div id="preview" style="font-size: 12px; color: var(--blue); margin-bottom: 10px; max-height: 60px; overflow: auto;"></div>
+      <button class="btn-primary" id="btnCleanDS" style="background: var(--border); color: var(--text);">✨ AI 自动清洗</button>
+      <button class="btn-primary" id="btnParse">直接导入</button>
+      <button class="btn-text" id="btnCancelImport">取消</button>
+    </div>
+  </div>
+
+  <div class="modal" id="modalSettings">
+    <div class="modal-inner" style="max-width: 500px; padding: 24px;">
+      <div class="setting-row" style="padding-top: 0;">
+        <span>主题外观</span>
+        <div class="theme-switch">
+          <button id="themeLight">☀️ 浅色</button>
+          <button id="themeDark">🌙 深色</button>
+        </div>
+      </div>
+
+      <div style="display: flex; justify-content: space-between; align-items: center; margin: 20px 0 10px;">
+        <h3 style="margin:0; font-size: 18px;">API Keys <span style="font-size: 12px; color: var(--green); font-weight: normal;">🔒 加密</span></h3>
+        <button class="btn-primary" id="btnCreateApi" style="width: auto; padding: 6px 16px; margin: 0; font-size: 14px;">+ 创建</button>
+      </div>
+      
+      <table class="api-table">
+        <thead><tr><th>API Key</th><th>状态</th><th style="text-align: right;">操作</th></tr></thead>
+        <tbody id="apiListBody"></tbody>
+      </table>
+
+      <div class="setting-row" style="margin-top: 15px;">
+        <span>总是显示中文</span>
+        <input type="checkbox" id="chkAlwaysZh" style="width: 20px; height: 20px;">
+      </div>
+      <div class="setting-row">
+        <span>粘贴后自动 AI 清洗并导入</span>
+        <input type="checkbox" id="chkAutoClean" style="width: 20px; height: 20px;">
+      </div>
+
+      <hr style="border:0; border-top:1px solid var(--border); margin: 15px 0;">
+      <button class="btn-text" id="btnOpenImport" style="color:var(--blue);">导入新单词</button>
+      <button class="btn-text" id="btnReset" style="color:var(--red);">重置当前进度</button>
+      
+      <div style="display: flex; justify-content: flex-end; margin-top: 10px;">
+        <button class="btn-text" id="btnCloseSettings" style="width: auto; padding: 8px 16px; background: var(--border); border-radius: 8px; color: var(--text);">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
