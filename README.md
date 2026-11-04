@@ -20,6 +20,18 @@ export npm_config_cache="E:/AI-claude/.npm-cache"
 npx wrangler pages deploy public --project-name vocab-agent --branch main
 ```
 
+## 📸 页面预览
+
+<div align="center">
+  <img src="https://raw.githubusercontent.com/liuyan24-log/vocab-agent/main/app-001.png" width="30%" alt="App 截图" />
+  <img src="https://raw.githubusercontent.com/liuyan24-log/vocab-agent/main/app-002.png" width="30%" alt="App 截图" />
+  <img src="https://raw.githubusercontent.com/liuyan24-log/vocab-agent/main/app-003.png" width="30%" alt="App 截图" />
+</div>
+<div align="center">
+  <img src="https://raw.githubusercontent.com/liuyan24-log/vocab-agent/main/app-004.png" width="45%" alt="App 截图" />
+  <img src="https://raw.githubusercontent.com/liuyan24-log/vocab-agent/main/app-005.png" width="45%" alt="App 截图" />
+</div>
+
 ## 说明
 
 - 免费档：不休眠，10 万请求/天，无需绑卡
