@@ -83,6 +83,9 @@
   <div class="modal" id="modalImport">
     <div class="modal-inner">
       <h3 style="margin-top:0;">导入单词本</h3>
+      <input type="file" id="fileInput" accept=".txt,.csv,.pdf,.docx,.doc" style="display: none;" />
+      <button class="btn-primary" id="btnUploadFile" style="background: var(--border); color: var(--text); margin-bottom: 10px;">📁 选择本地文件</button>
+      <div style="font-size: 12px; color: var(--sub); margin-bottom: 10px;">支持 .txt / .csv / .pdf / .docx</div>
       <textarea id="ta" placeholder="粘贴脏文本，或开启自动清洗..."></textarea>
       <div id="cleanStatus" style="font-size: 12px; color: var(--sub); margin-bottom: 10px;">就绪</div>
       <div id="preview" style="font-size: 12px; color: var(--blue); margin-bottom: 10px; max-height: 60px; overflow: auto;"></div>
@@ -131,6 +134,8 @@
     </div>
   </div>
 
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

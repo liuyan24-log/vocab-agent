@@ -113,6 +113,13 @@ function parseLines(text){
   return out;
 }
 
+function renderPreview(){
+  const list = parseLines($('ta').value);
+  if (!list.length) { $('preview').innerHTML = ''; return; }
+  const names = list.slice(0, 5).map(w => w.en).join(' / ');
+  $('preview').textContent = `解析到 ${list.length} 个词：${names}` + (list.length > 5 ? ' ...' : '');
+}
+
 function draw(){
   if(S.mode === 'learn'){
     if(S.learnList.length === 0){ $('en').textContent = 'Learn 列表为空'; $('zh').classList.remove('hide'); $('zh').textContent = '去“词库”随机抽取单词'; return; }
@@ -626,6 +633,77 @@ $('ta').addEventListener('input', () => {
   if (!S.autoClean) return;
   clearTimeout(autoCleanTimer);
   autoCleanTimer = setTimeout(() => { if ($('ta').value.trim() && !$('btnCleanDS').disabled) { executeClean(); } }, 1200);
+});
+
+$('btnUploadFile').addEventListener('click', () => $('fileInput').click());
+
+if (window.pdfjsLib) {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+}
+
+function readFileAs(file, method) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error || new Error('文件读取失败'));
+    reader[method](file);
+  });
+}
+
+async function extractPdfText(arrayBuffer) {
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const pages = [];
+  for (let pageNo = 1; pageNo <= pdf.numPages; pageNo++) {
+    const page = await pdf.getPage(pageNo);
+    const content = await page.getTextContent();
+    let text = '';
+    content.items.forEach((item) => {
+      if (typeof item.str !== 'string') return;
+      text += item.str + (item.hasEOL ? '\n' : '');
+    });
+    pages.push(text);
+  }
+  return pages.join('\n\n');
+}
+
+async function extractDocxText(arrayBuffer) {
+  const result = await mammoth.extractRawText({ arrayBuffer });
+  return result.value;
+}
+
+$('fileInput').addEventListener('change', async (e) => {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
+  const statusEl = $('cleanStatus');
+  try {
+    let text = '';
+    if (ext === 'txt' || ext === 'csv') {
+      text = await readFileAs(file, 'readAsText');
+    } else if (ext === 'pdf') {
+      statusEl.textContent = '正在解析 PDF...';
+      text = await extractPdfText(await readFileAs(file, 'readAsArrayBuffer'));
+    } else if (ext === 'docx') {
+      statusEl.textContent = '正在解析 Word 文档...';
+      text = await extractDocxText(await readFileAs(file, 'readAsArrayBuffer'));
+    } else if (ext === 'doc') {
+      statusEl.textContent = '暂不支持老版 .doc 格式，请另存为 .docx 或 .txt';
+      return;
+    } else {
+      statusEl.textContent = '❌ 不支持的文件格式，请选择 .txt / .csv / .pdf / .docx';
+      return;
+    }
+    if (!text || !text.trim()) throw new Error('空文本');
+    statusEl.textContent = '✅ 已解析：' + file.name;
+    $('ta').value = text;
+    isTextCleaned = false;
+    renderPreview();
+    if (S.autoClean) executeClean();
+  } catch (err) {
+    statusEl.textContent = '解析失败，如果是扫描件或图片，请直接复制文字';
+  } finally {
+    $('fileInput').value = '';
+  }
 });
 
 (async () => {
