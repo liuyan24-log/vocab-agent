@@ -14,34 +14,39 @@
       <button id="tabTable">词库</button>
       <button id="tabFav">收藏</button>
     </div>
+    <button class="icon-btn" id="btnLearnManage" title="批量管理 Learn" aria-label="批量管理 Learn" style="display:none;">☰</button>
     <button class="icon-btn" id="btnSettings">⚙️</button>
   </header>
 
   <main id="mainCard">
     <div class="card" id="card">
       <div class="en" id="en">请导入词库</div>
+      <div class="phonetic hide" id="phonetic"></div>
       <div class="zh hide" id="zh"></div>
+      <div class="nav-hint">← 点击左侧回看 ｜ 点击右侧继续 →</div>
     </div>
   </main>
   <div class="stat" id="stat"></div>
 
   <div class="table-list" id="mainTable">
     <div class="table-header">
-      <input type="text" class="search-bar" id="searchTable" placeholder="🔍 搜索词库...">
-      <div class="table-header-row">
-        <input type="number" id="inputRandomCount" placeholder="数量 (如 20)" style="flex: 1; margin: 0;" min="1">
-        <button class="btn-primary" id="btnRandomDraw" style="margin: 0; width: auto; padding: 10px 16px; background: var(--green);">🎲 抽取</button>
+      <div class="toolbar toolbar-main">
+        <input type="text" class="search-bar" id="searchTable" placeholder="🔍 搜索词库...">
+        <div class="draw-group">
+          <input type="number" id="inputRandomCount" placeholder="数量" min="1" inputmode="numeric" aria-label="抽取数量">
+          <button class="btn-primary btn-draw" id="btnRandomDraw">🎲 抽取</button>
+        </div>
       </div>
-      <div class="table-header-row" style="justify-content: space-between; flex-wrap: wrap;">
-        <div style="display: flex; gap: 6px; flex-wrap: wrap;">
-          <button class="btn-small" id="btnToggleSelectMode">开启多选</button>
+      <div class="toolbar toolbar-sub">
+        <div class="toolbar-left">
+          <button class="btn-small" id="btnToggleSelectMode">多选</button>
           <button class="btn-small" id="btnSelectAll" style="display: none;">全选</button>
           <button class="btn-small btn-danger" id="btnBatchDelete" style="display: none;">删除</button>
-          
           <select class="batch-select" id="batchFavTarget" style="display: none;"></select>
-          <button class="btn-small" id="btnBatchAddFav" style="display: none; color: var(--blue); border-color: var(--blue);">加入</button>
+          <button class="btn-small" id="btnBatchAddFav" style="display: none;">加入</button>
         </div>
-        <button class="btn-small" id="btnClearLearn" style="color: var(--red); border-color: var(--red);">清空 Learn</button>
+        <span class="table-meta" id="tableMeta"></span>
+        <button class="icon-action" id="btnClearLearn" title="清空 Learn 队列" aria-label="清空 Learn 队列">🗑️</button>
       </div>
     </div>
     <div class="table-content" id="tableListContent"></div>
@@ -49,9 +54,12 @@
 
   <div class="table-list" id="mainFavList">
     <div class="table-header">
-      <div class="table-header-row" style="justify-content: space-between;">
-        <h2 style="margin:0; font-size: 20px;">我的收藏夹</h2>
-        <button class="btn-primary" id="btnCreateFolder" style="width: auto; padding: 8px 16px; margin: 0; font-size: 14px;">+ 新建</button>
+      <div class="table-header-row fav-list-head">
+        <div class="fav-list-title">
+          <h2 class="section-title">我的收藏夹</h2>
+          <div class="fav-hint">长按或右键文件夹可重命名 / 管理 / 删除</div>
+        </div>
+        <button class="btn-primary btn-inline btn-compact" id="btnCreateFolder">+ 新建</button>
       </div>
     </div>
     <div class="table-content" id="favListContent"></div>
@@ -64,8 +72,9 @@
         <h3 style="margin:0; font-size: 16px;" id="favManageTitle">管理夹子</h3>
       </div>
       <input type="text" class="search-bar" id="searchFav" placeholder="🔍 搜索当前夹子...">
-      <div class="table-header-row">
+      <div class="table-header-row fav-manage-actions">
         <button class="btn-small" id="btnFavSelectAll">全选</button>
+        <button class="btn-small" id="btnShuffleFav" style="color: var(--yellow); border-color: var(--yellow);">🔀 打乱</button>
         <select class="batch-select" id="favMoveTarget" style="flex: 1;"></select>
         <button class="btn-small" id="btnBatchMoveFav" style="color: var(--blue); border-color: var(--blue);">转移</button>
         <button class="btn-small btn-danger" id="btnBatchRemoveFav">移除</button>
@@ -74,9 +83,25 @@
     <div class="table-content" id="favManageContent"></div>
   </div>
 
-  <!-- 底部只剩收藏和发音 -->
+  <div class="table-list" id="mainLearnManage">
+    <div class="table-header">
+      <div class="table-header-row learn-manage-head">
+        <button class="btn-small" id="btnBackFromLearnManage">← 返回卡片</button>
+        <h3 class="learn-manage-title">批量管理 Learn</h3>
+      </div>
+      <div class="table-header-row learn-manage-actions">
+        <button class="btn-small" id="btnLearnSelectAll">全选</button>
+        <button class="btn-small" id="btnLearnDeselectAll">取消全选</button>
+        <button class="btn-small btn-danger" id="btnLearnBatchRemove" disabled>移出选中 (0)</button>
+      </div>
+    </div>
+    <div class="table-content" id="learnManageContent"></div>
+  </div>
+
+  <!-- 底部操作：收藏 / 移出 Learn / 发音 -->
   <footer id="mainFooter">
     <button class="action-btn btn-fav" id="btnFav">☆</button>
+    <button class="action-btn btn-remove-learn" id="btnRemoveLearn" title="移出当前单词" aria-label="移出当前单词">❌ 移出学习</button>
     <button class="action-btn btn-speak" id="btnSpeak">🔊</button>
   </footer>
 
@@ -130,6 +155,75 @@
       
       <div style="display: flex; justify-content: flex-end; margin-top: 10px;">
         <button class="btn-text" id="btnCloseSettings" style="width: auto; padding: 8px 16px; background: var(--border); border-radius: 8px; color: var(--text);">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 收藏夹选择：手机底部抽屉 / PC 居中弹窗 -->
+  <div class="modal sheet-modal" id="modalFavPicker" role="dialog" aria-modal="true" aria-labelledby="favPickerTitle">
+    <div class="modal-inner sheet-inner">
+      <div class="sheet-handle"></div>
+      <div class="sheet-head">
+        <h3 id="favPickerTitle">收藏到…</h3>
+        <button class="icon-btn sheet-close" data-close="modalFavPicker" aria-label="关闭">✕</button>
+      </div>
+      <div class="fav-pick-list" id="favPickList"></div>
+      <div class="fav-new-wrap" id="favPickNewWrap" hidden>
+        <input type="text" class="search-bar" id="favPickNewName" maxlength="40" placeholder="新收藏夹名称">
+        <div class="sheet-actions">
+          <button class="btn-small" id="btnFavPickNewCancel">取消</button>
+          <button class="btn-primary btn-inline" id="btnFavPickNewConfirm">创建并收藏</button>
+        </div>
+      </div>
+      <button class="btn-text sheet-new-btn" id="btnFavPickNew">＋ 新建收藏夹</button>
+    </div>
+  </div>
+
+  <!-- 文件夹长按/右键菜单 -->
+  <div class="modal sheet-modal" id="modalFolderMenu" role="dialog" aria-modal="true" aria-labelledby="folderMenuTitle">
+    <div class="modal-inner sheet-inner">
+      <div class="sheet-handle"></div>
+      <div class="sheet-head">
+        <h3>文件夹操作</h3>
+        <button class="icon-btn sheet-close" data-close="modalFolderMenu" aria-label="关闭">✕</button>
+      </div>
+      <div class="sheet-subtitle" id="folderMenuTitle"></div>
+      <div class="menu-list">
+        <button class="menu-item" id="btnFolderRename">✏️ 重命名</button>
+        <button class="menu-item" id="btnFolderManage">⚙️ 管理单词</button>
+        <button class="menu-item menu-danger" id="btnFolderDelete">🗑️ 删除收藏夹</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 新建 / 重命名收藏夹（替代 prompt） -->
+  <div class="modal sheet-modal" id="modalFolderEdit" role="dialog" aria-modal="true" aria-labelledby="folderEditTitle">
+    <div class="modal-inner sheet-inner">
+      <div class="sheet-handle"></div>
+      <div class="sheet-head">
+        <h3 id="folderEditTitle">新建收藏夹</h3>
+        <button class="icon-btn sheet-close" data-close="modalFolderEdit" aria-label="关闭">✕</button>
+      </div>
+      <input type="text" class="search-bar" id="folderEditInput" maxlength="40" placeholder="收藏夹名称">
+      <div class="sheet-actions">
+        <button class="btn-small" id="btnFolderEditCancel">取消</button>
+        <button class="btn-primary btn-inline" id="btnFolderEditConfirm">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 新建 API Key（替代 prompt） -->
+  <div class="modal sheet-modal" id="modalApiKey" role="dialog" aria-modal="true" aria-labelledby="apiKeyTitle">
+    <div class="modal-inner sheet-inner">
+      <div class="sheet-handle"></div>
+      <div class="sheet-head">
+        <h3 id="apiKeyTitle">新建 API Key</h3>
+        <button class="icon-btn sheet-close" data-close="modalApiKey" aria-label="关闭">✕</button>
+      </div>
+      <input type="password" class="search-bar" id="apiKeyInput" autocomplete="off" placeholder="sk-...">
+      <div class="sheet-actions">
+        <button class="btn-small" id="btnApiKeyCancel">取消</button>
+        <button class="btn-primary btn-inline" id="btnApiKeyConfirm">保存</button>
       </div>
     </div>
   </div>

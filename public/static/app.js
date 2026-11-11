@@ -1,15 +1,52 @@
-const LS_KEY = 'vocab_agent_v33'; 
-let S = { 
-  words: [], learnList: [], learnPool: [], 
+const LS_KEY = 'vocab_agent_v33';
+const AUTO_REVIEW_ID = 'auto_review';
+const AUTO_REVIEW_NAME = '🔄 自动复习池';
+let S = {
+  words: [], learnList: [], learnPool: [],
   favFolders: [{ id: 'default', name: '主收藏', words: [] }],
   currentFavId: 'default',
   favPool: [], favSeen: [], 
   mode: 'learn', current: null, showZh: false, alwaysZh: false, autoClean: false,
   apiKeys: [], currentApiId: null, selectMode: false, selectedWords: [], theme: 'dark',
-  favManageSelected: [] 
+  favManageSelected: [], historyList: []
 };
 let isTextCleaned = false;
+let learnManageSelected = [];
 const $ = id => document.getElementById(id);
+
+function escapeHtml(value) {
+  return String(value == null ? '' : value).replace(/[&<>"']/g, ch => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[ch]));
+}
+
+let toastTimer = null;
+function showToast(msg) {
+  let el = $('appToast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'appToast';
+    el.className = 'toast';
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 1400);
+}
+
+function openSheet(id) {
+  const el = $(id);
+  if (!el) return;
+  el.classList.add('show');
+  el.setAttribute('aria-hidden', 'false');
+}
+function closeSheet(id) {
+  const el = $(id);
+  if (!el) return;
+  el.classList.remove('show');
+  el.setAttribute('aria-hidden', 'true');
+}
 
 // ================= Web Crypto AES 加密模块 =================
 const SECRET_KEY = "vocab_agent_secret_key_2026";
@@ -53,9 +90,10 @@ async function save(){
   }catch(e){ console.error(e); } 
 }
 
-async function load(){ 
-  try{ 
-    const r = localStorage.getItem(LS_KEY); 
+async function load(){
+  try{
+    const r = localStorage.getItem(LS_KEY);
+    let legacyReview = [];
     if(r) {
       let parsed = JSON.parse(r);
       if (parsed.favs && !parsed.favFolders) {
@@ -68,15 +106,28 @@ async function load(){
         parsed.currentFavId = newFolders[0].id;
         delete parsed.favs; delete parsed.currentFavIndex;
       }
-      
+
       if (parsed.apiKeys && parsed.apiKeys.length > 0) {
         for (let k of parsed.apiKeys) {
           if (k.isEncrypted) { k.key = await decryptText(k.key); k.isEncrypted = false; }
         }
       }
+      legacyReview = Array.isArray(parsed.reviewPool) ? parsed.reviewPool : [];
       S = Object.assign(S, parsed);
+      delete S.reviewPool;
     }
-  }catch(e){ console.error(e); } 
+
+    if (!Array.isArray(S.favFolders) || S.favFolders.length === 0) {
+      S.favFolders = [{ id: 'default', name: '主收藏', words: [] }];
+      S.currentFavId = 'default';
+    }
+    if (!Array.isArray(S.historyList)) S.historyList = [];
+
+    // 旧版隐藏复习池一次性迁入系统收藏夹，然后移除旧字段，避免双写。
+    const hadAuto = S.favFolders.some(f => f.id === AUTO_REVIEW_ID);
+    ensureAutoReviewFolder(legacyReview);
+    if (!r || legacyReview.length > 0 || !hadAuto) await save();
+  }catch(e){ console.error(e); }
 }
 
 function shuffle(a){ for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; }
@@ -85,6 +136,47 @@ function getCurrentFav() {
   let f = S.favFolders.find(f => f.id === S.currentFavId);
   if (!f) { f = S.favFolders[0]; S.currentFavId = f.id; }
   return f;
+}
+
+function ensureAutoReviewFolder(legacyWords = []) {
+  if (!Array.isArray(S.favFolders)) S.favFolders = [];
+  let folder = S.favFolders.find(f => f.id === AUTO_REVIEW_ID);
+  if (!folder) {
+    folder = { id: AUTO_REVIEW_ID, name: AUTO_REVIEW_NAME, words: [] };
+    S.favFolders.unshift(folder);
+  } else {
+    folder.name = AUTO_REVIEW_NAME;
+    if (!Array.isArray(folder.words)) folder.words = [];
+    const idx = S.favFolders.indexOf(folder);
+    if (idx > 0) {
+      S.favFolders.splice(idx, 1);
+      S.favFolders.unshift(folder);
+    }
+  }
+  (legacyWords || []).forEach(w => {
+    if (w && w.en && !folder.words.some(x => x.en === w.en)) folder.words.push(w);
+  });
+  return folder;
+}
+
+function getAutoReviewFolder() {
+  return ensureAutoReviewFolder();
+}
+
+// 收藏夹锁定集合：任意收藏夹（含自动复习池）里的词都视为已锁定。
+function getFavWordSet() {
+  const set = new Set();
+  (S.favFolders || []).forEach(folder => {
+    ((folder && folder.words) || []).forEach(w => { if (w && w.en) set.add(w.en); });
+  });
+  return set;
+}
+
+// 待学数量 = 总词数 - 已学完 - Learn 队列 - 任意收藏夹（按并集去重）。
+function getUnlearnedCount() {
+  const learnSet = new Set((S.learnList || []).map(w => w && w.en).filter(Boolean));
+  const favSet = getFavWordSet();
+  return (S.words || []).filter(w => w && w.isLearned !== true && !learnSet.has(w.en) && !favSet.has(w.en)).length;
 }
 
 function applyTheme() {
@@ -96,7 +188,7 @@ $('themeLight').addEventListener('click', () => { S.theme = 'light'; save(); app
 $('themeDark').addEventListener('click', () => { S.theme = 'dark'; save(); applyTheme(); });
 
 // ===== parseLines start =====
-// 通用背单词文本解析：不针对任何单一品牌/数据源，尽量从脏 PDF/Word 文本中还原 {en, zh}。
+// 通用背单词文本解析：不针对任何单一品牌/数据源，尽量从脏 PDF/Word 文本中还原 {en, phonetic, zh}。
 // 下面两条注释标记同时供 Node 测试脚本按区间抽取真实函数，避免测试代码和线上代码分叉。
 const CJK_RE = /[㐀-䶿一-鿿豈-﫿]/;
 const POS_WORDS = ['n', 'v', 'vt', 'vi', 'adj', 'adv', 'prep', 'conj', 'pron', 'num', 'art', 'int', 'aux', 'abbr', 'phr', 'pl', 'modal'];
@@ -346,6 +438,12 @@ function sanitizeZh(zh) {
   return s;
 }
 
+function sanitizePhonetic(phonetic) {
+  let s = String(phonetic || '').replace(/[\t\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (s.length > 80) s = s.slice(0, 80).trim();
+  return s;
+}
+
 function parseLineEntries(rawLine) {
   const entries = [];
   const line = preCleanLine(rawLine);
@@ -360,11 +458,17 @@ function parseLineEntries(rawLine) {
     let after = line.slice(head.end);
     let consumed = 0;
 
-    // 词后可能有多组音标（英音/美音），全部跳过
+    // 词后可能有多组音标（英音/美音）：跳过全部，同时提取 [] / // 形式存入 phonetic。
+    // 圆括号形式仍只跳过不存，避免把 (v.) 这类词性说明误当音标。
+    const phonetics = [];
     let phGuard = 0;
     while (phGuard++ < 4) {
       const ph = after.slice(consumed).match(/^\s*([\[\(（\/][^\]）\/]{0,80}[\]）\/])\s*/);
       if (!ph || hasCJK(ph[1])) break;
+      const group = ph[1].trim();
+      if (/^\[[^\]]+\]$/.test(group) || /^\/[^\/]+\/$/.test(group)) {
+        phonetics.push(group);
+      }
       consumed += ph[0].length;
     }
 
@@ -385,7 +489,7 @@ function parseLineEntries(rawLine) {
     const zhRaw = rest.slice(cjkIdx);
     const cut = cutChineseDefinition(zhRaw);
     const zh = sanitizeZh((pos ? pos + ' ' : '') + cut.zh);
-    if (zh) entries.push({ en: head.en, zh: zh });
+    if (zh) entries.push({ en: head.en, phonetic: sanitizePhonetic(phonetics.join(' ')), zh: zh });
 
     if (cut.next === -1 || cut.next === Infinity) break;
     const nextAbs = head.end + consumed + cjkIdx + cut.next;
@@ -399,20 +503,27 @@ function parseLines(text) {
   if (text == null || text === '') return [];
   const lines = normalizeRawText(text).split(/\r?\n/);
   const out = [];
-  const seen = new Set();
+  const byKey = new Map();
   let pending = null;
 
-  const push = (en, zh) => {
+  const push = (en, zh, phonetic) => {
     en = sanitizeEn(en);
     zh = sanitizeZh(zh);
+    phonetic = sanitizePhonetic(phonetic);
     if (!en || !zh) return;
     if (!/^[A-Za-z][A-Za-z'’\- ]*$/.test(en)) return;
     if (CJK_RE.test(en) || /\d/.test(en)) return;
     if (en.length > 40 || en.split(/\s+/).length > 4) return;
     const key = en.toLowerCase().replace(/’/g, "'");
-    if (seen.has(key)) return;
-    seen.add(key);
-    out.push({ en: en, zh: zh });
+    const prev = byKey.get(key);
+    if (prev) {
+      // 同一单词重复出现时：先出现的没音标，就用后出现的音标补全。
+      if (!prev.phonetic && phonetic) prev.phonetic = phonetic;
+      return;
+    }
+    const item = { en: en, phonetic: phonetic || '', zh: zh };
+    byKey.set(key, item);
+    out.push(item);
   };
 
   for (let i = 0; i < lines.length; i++) {
@@ -451,7 +562,7 @@ function parseLines(text) {
     }
 
     const entries = parseLineEntries(combined);
-    for (const e of entries) push(e.en, e.zh);
+    for (const e of entries) push(e.en, e.zh, e.phonetic);
   }
 
   return out;
@@ -460,18 +571,26 @@ function parseLines(text) {
 function renderPreview(){
   const list = parseLines($('ta').value);
   if (!list.length) { $('preview').innerHTML = ''; return; }
-  const names = list.slice(0, 5).map(w => w.en).join(' / ');
-  $('preview').textContent = `解析到 ${list.length} 个词：${names}` + (list.length > 5 ? ' ...' : '');
+  const withPhonetic = list.filter(w => w.phonetic).length;
+  const names = list.slice(0, 5).map(w => w.en + (w.phonetic ? ' ' + w.phonetic : '')).join(' / ');
+  $('preview').textContent = `解析到 ${list.length} 个词（${withPhonetic} 个带音标）：${names}` + (list.length > 5 ? ' ...' : '');
+}
+
+function setPhonetic(value) {
+  const el = $('phonetic');
+  const text = String(value || '').trim();
+  el.textContent = text;
+  el.classList.toggle('hide', !text);
 }
 
 function draw(){
   if(S.mode === 'learn'){
-    if(S.learnList.length === 0){ $('en').textContent = 'Learn 列表为空'; $('zh').classList.remove('hide'); $('zh').textContent = '去“词库”随机抽取单词'; return; }
-    if(S.learnPool.length === 0){ $('en').textContent = '🎉 本轮完成'; $('zh').classList.remove('hide'); $('zh').textContent = '点屏幕重新洗牌'; return; }
+    if(S.learnList.length === 0){ S.current = null; $('en').textContent = 'Learn 列表为空'; $('zh').classList.remove('hide'); $('zh').textContent = '去“词库”随机抽取单词'; setPhonetic(''); return; }
+    if(S.learnPool.length === 0){ $('en').textContent = '🎉 本轮完成'; $('zh').classList.remove('hide'); $('zh').textContent = '点屏幕重新洗牌'; setPhonetic(''); return; }
     const i = Math.floor(Math.random()*S.learnPool.length); S.current = S.learnPool.splice(i,1)[0];
   } else if (S.mode === 'fav') {
     const curFolder = getCurrentFav();
-    if(curFolder.words.length === 0){ $('en').textContent = '夹子是空的'; $('zh').textContent = '去背单词吧'; $('zh').classList.remove('hide'); S.current = null; render(); return; }
+    if(curFolder.words.length === 0){ $('en').textContent = '夹子是空的'; $('zh').textContent = '去背单词吧'; $('zh').classList.remove('hide'); S.current = null; setPhonetic(''); render(); return; }
     if(S.favPool.length === 0){ S.favPool = shuffle(curFolder.words.slice()); S.favSeen = []; }
     const i = Math.floor(Math.random()*S.favPool.length); S.current = S.favPool.splice(i,1)[0]; 
   }
@@ -480,26 +599,79 @@ function draw(){
 
 // 🌟 封装“下一个”的逻辑
 function nextWord() {
-  if(S.mode === 'learn' && S.learnPool.length===0 && S.learnList.length>0) S.learnPool = shuffle(S.learnList.slice()); 
-  if(S.mode === 'fav' && S.favPool.length===0 && getCurrentFav().words.length>0) S.favPool = shuffle(getCurrentFav().words.slice()); 
-  draw(); 
+  // 新一轮开始（抽取池为空后重洗）时清空历史栈，避免左键回退跨越轮次。
+  let newRound = false;
+  if(S.mode === 'learn' && S.learnPool.length===0 && S.learnList.length>0) {
+    S.learnPool = shuffle(S.learnList.slice());
+    // 自动复习池：每轮重洗时随机打乱；它不会被“清空 Learn”删除。
+    shuffle(getAutoReviewFolder().words);
+    newRound = true;
+  }
+  if(S.mode === 'fav' && S.favPool.length===0 && getCurrentFav().words.length>0) {
+    S.favPool = shuffle(getCurrentFav().words.slice());
+    newRound = true;
+  }
+  if (newRound) S.historyList = [];
+  else if (S.current) S.historyList.push(S.current);
+  draw();
+}
+
+// 点击左半边 / 方向键左：回退到历史栈中的上一个词。
+function goBackCard() {
+  if (S.mode !== 'learn' && S.mode !== 'fav') return;
+  if (!S.historyList.length) { showToast('已经是第一个单词啦'); return; }
+  S.current = S.historyList.pop();
+  S.showZh = false;
+  $('zh').classList.add('hide');
+  render();
+  save();
+}
+
+// 点击右半边 / 空格 / 方向键右：未显示中文则显示，已显示则下一个。
+function advanceCard(withAnim) {
+  if (S.current == null) return;
+  if (withAnim) {
+    const cardEl = $('card'); cardEl.style.transform = 'scale(0.98)'; setTimeout(() => { cardEl.style.transform = ''; }, 100);
+  }
+  if (!S.showZh && !S.alwaysZh) {
+    S.showZh = true; $('zh').classList.remove('hide'); save();
+  } else {
+    S.showZh = false; $('zh').classList.add('hide');
+    requestAnimationFrame(() => { nextWord(); });
+  }
+}
+
+function updateTabs() {
+  $('tabLearn').classList.toggle('active', S.mode === 'learn' || S.mode === 'learnManage');
+  $('tabTable').classList.toggle('active', S.mode === 'table');
+  $('tabFav').classList.toggle('active', S.mode === 'favList' || S.mode === 'favManage' || S.mode === 'fav');
 }
 
 function render(){
+  updateTabs();
   $('mainCard').style.display = (S.mode === 'learn' || S.mode === 'fav') ? 'flex' : 'none';
   $('mainFooter').style.display = (S.mode === 'learn' || S.mode === 'fav') ? 'flex' : 'none';
   $('stat').style.display = (S.mode === 'learn' || S.mode === 'fav') ? 'block' : 'none';
-  
+
+  const removeLearnBtn = $('btnRemoveLearn');
+  removeLearnBtn.style.display = S.mode === 'learn' ? 'flex' : 'none';
+  removeLearnBtn.disabled = S.current == null;
+  $('btnLearnManage').style.display = S.mode === 'learn' ? 'inline-block' : 'none';
+
   $('mainTable').classList.toggle('show', S.mode === 'table');
   $('mainFavList').classList.toggle('show', S.mode === 'favList');
   $('mainFavManage').classList.toggle('show', S.mode === 'favManage');
+  $('mainLearnManage').classList.toggle('show', S.mode === 'learnManage');
 
   if(S.mode === 'table') { renderTable(); return; }
   if(S.mode === 'favList') { renderFavList(); return; }
   if(S.mode === 'favManage') { renderFavManage(); return; }
+  if(S.mode === 'learnManage') { renderLearnManage(); return; }
 
-  if(S.current == null) { $('en').textContent = '-'; $('zh').textContent = ''; return; }
-  $('en').textContent = S.current.en; $('zh').textContent = S.current.zh || '(无中文)';
+  if(S.current == null) { $('en').textContent = '-'; $('zh').textContent = ''; setPhonetic(''); return; }
+  $('en').textContent = S.current.en;
+  setPhonetic(S.current.phonetic);
+  $('zh').textContent = S.current.zh || '(无中文)';
   
   if (S.alwaysZh || S.showZh) { $('zh').classList.remove('hide'); } else { $('zh').classList.add('hide'); }
 
@@ -508,7 +680,7 @@ function render(){
   $('chkAlwaysZh').checked = S.alwaysZh; $('chkAutoClean').checked = S.autoClean;
   
   const total = S.learnList.length; const normalLeft = S.learnPool.length;
-  if (S.mode === 'learn') $('stat').textContent = `Learn 列表 ${total} 词 · 剩余 ${normalLeft}`;
+  if (S.mode === 'learn') $('stat').textContent = `Learn 列表 ${total} 词 · 剩余 ${normalLeft} · 长按卡片清空`;
   else if (S.mode === 'fav') {
     const folder = getCurrentFav();
     $('stat').textContent = `[${folder.name}] 共 ${folder.words.length} 词 · 剩余 ${S.favPool.length}`;
@@ -516,13 +688,14 @@ function render(){
 }
 
 function renderTable(){
+  ensureAutoReviewFolder();
   const t = $('tableListContent'); t.innerHTML = '';
   const query = $('searchTable').value.trim().toLowerCase();
   
   const btnToggle = $('btnToggleSelectMode'); const btnBatchDel = $('btnBatchDelete'); const btnSelectAll = $('btnSelectAll');
   const batchFavTarget = $('batchFavTarget'); const btnBatchAddFav = $('btnBatchAddFav');
 
-  batchFavTarget.innerHTML = S.favFolders.map(f => `<option value="${f.id}">${f.name}</option>`).join('');
+  batchFavTarget.innerHTML = S.favFolders.map(f => `<option value="${f.id}">${escapeHtml(f.name)}</option>`).join('');
 
   if (S.selectMode) {
     btnToggle.textContent = '退出多选'; btnToggle.classList.add('btn-danger');
@@ -531,10 +704,16 @@ function renderTable(){
     btnBatchDel.textContent = `删除 (${S.selectedWords.length})`;
     btnSelectAll.textContent = (S.words.length > 0 && S.selectedWords.length === S.words.length) ? '取消全选' : '全选';
   } else {
-    btnToggle.textContent = '开启多选'; btnToggle.classList.remove('btn-danger');
+    btnToggle.textContent = '多选'; btnToggle.classList.remove('btn-danger');
     btnSelectAll.style.display = 'none'; btnBatchDel.style.display = 'none'; batchFavTarget.style.display = 'none'; btnBatchAddFav.style.display = 'none';
-    S.selectedWords = []; 
+    S.selectedWords = [];
   }
+
+  const learnSet = new Set(S.learnList.map(w => w.en));
+  const favSet = getFavWordSet();
+  const remainingCount = getUnlearnedCount();
+  $('tableMeta').textContent = `待学 ${remainingCount} / ${S.words.length}`;
+  $('tableMeta').style.display = S.selectMode ? 'none' : 'inline';
 
   if(S.words.length === 0) { t.innerHTML = '<div style="text-align:center; padding:20px; color:var(--sub);">总表为空，请导入</div>'; return; }
 
@@ -542,24 +721,38 @@ function renderTable(){
   if (filteredWords.length === 0) { t.innerHTML = '<div style="text-align:center; padding:20px; color:var(--sub);">没有找到匹配的单词</div>'; return; }
 
   filteredWords.forEach(w => {
-    const inLearn = S.learnList.some(lw => lw.en === w.en); 
-    const inAnyFav = S.favFolders.some(f => f.words.some(fw => fw.en === w.en)); 
+    const inLearn = learnSet.has(w.en);
+    const inAnyFav = favSet.has(w.en);
+    const isLearned = w.isLearned === true;
     const isChecked = S.selectedWords.includes(w.en);
-    const div = document.createElement('div'); div.className = 'list-item';
+    const locked = inLearn || inAnyFav || isLearned;
+    const div = document.createElement('div'); div.className = 'list-item' + (locked ? ' in-learn' : '');
     
+    const safeEn = escapeHtml(w.en);
+    const safeZh = escapeHtml(w.zh || '');
     let leftHtml = `<div class="list-item-left">`;
-    if (S.selectMode) leftHtml += `<input type="checkbox" class="chk-item" data-en="${w.en}" ${isChecked ? 'checked' : ''}>`;
-    leftHtml += `<div style="min-width: 0; flex: 1;"><div class="list-item-word" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${w.en}</div><div class="list-item-zh" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${w.zh}</div></div></div>`;
-    
+    if (S.selectMode) leftHtml += `<input type="checkbox" class="chk-item" data-en="${safeEn}" ${isChecked ? 'checked' : ''}>`;
+    leftHtml += `<div style="min-width: 0; flex: 1;"><div class="list-item-word" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${safeEn}</div><div class="list-item-zh" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${safeZh}</div></div></div>`;
+
     let rightHtml = `<div style="display: flex; gap: 6px; flex-shrink: 0;">`;
     if (!S.selectMode) {
       const starIcon = inAnyFav ? '★' : '☆';
       const starColor = inAnyFav ? 'var(--yellow)' : 'var(--text)';
       const starBorder = inAnyFav ? 'var(--yellow)' : 'var(--border)';
+      let learnBtnHtml;
+      if (inLearn) {
+        learnBtnHtml = `<button class="btn-add added" data-en="${safeEn}">已在 Learn</button>`;
+      } else if (inAnyFav) {
+        learnBtnHtml = `<button class="btn-add" disabled data-en="${safeEn}" style="background: transparent; color: var(--sub); border-color: var(--border); cursor: default;">⭐ 已收藏</button>`;
+      } else if (isLearned) {
+        learnBtnHtml = `<button class="btn-add" disabled data-en="${safeEn}" style="background: transparent; color: var(--sub); border-color: var(--border); cursor: default;">已学完</button>`;
+      } else {
+        learnBtnHtml = `<button class="btn-add" data-en="${safeEn}">+ Learn</button>`;
+      }
       rightHtml += `
-        <button class="btn-small btn-toggle-fav" data-en="${w.en}" style="color: ${starColor}; border-color: ${starBorder};">${starIcon}</button>
-        <button class="btn-add ${inLearn ? 'added' : ''}" data-en="${w.en}">${inLearn ? '已在 Learn' : '+ Learn'}</button>
-        <button class="btn-small btn-danger btn-del" data-en="${w.en}">🗑️</button>
+        <button class="btn-small btn-toggle-fav" data-en="${safeEn}" style="color: ${starColor}; border-color: ${starBorder};">${starIcon}</button>
+        ${learnBtnHtml}
+        <button class="btn-small btn-danger btn-del" data-en="${safeEn}">🗑️</button>
       `;
     }
     rightHtml += `</div>`;
@@ -579,19 +772,9 @@ function renderTable(){
     
     document.querySelectorAll('.btn-toggle-fav').forEach(btn => {
       btn.addEventListener('click', (e) => {
-        const wordStr = e.target.dataset.en; const targetWord = S.words.find(w => w.en === wordStr);
-        const inAnyFav = S.favFolders.some(f => f.words.some(fw => fw.en === wordStr));
-        if (inAnyFav) {
-          S.favFolders.forEach(folder => {
-            const idx = folder.words.findIndex(fw => fw.en === wordStr);
-            if (idx >= 0) folder.words.splice(idx, 1);
-          });
-        } else {
-          const targetId = $('batchFavTarget').value;
-          const folder = S.favFolders.find(f => f.id === targetId);
-          if(folder) folder.words.push(targetWord);
-        }
-        save(); renderTable();
+        const wordStr = e.target.dataset.en;
+        const targetWord = S.words.find(w => w.en === wordStr);
+        if (targetWord) openFavPicker(targetWord);
       });
     });
 
@@ -614,64 +797,290 @@ function renderTable(){
   });
 }
 
+function openLearnManage() {
+  if (S.mode !== 'learn') return;
+  learnManageSelected = [];
+  S.mode = 'learnManage';
+  render();
+}
+
+function renderLearnManage() {
+  const t = $('learnManageContent');
+  t.innerHTML = '';
+  const list = S.learnList;
+  const existing = new Set(list.map(w => w.en));
+  learnManageSelected = learnManageSelected.filter(en => existing.has(en));
+
+  const removeBtn = $('btnLearnBatchRemove');
+  removeBtn.textContent = `移出选中 (${learnManageSelected.length})`;
+  removeBtn.disabled = learnManageSelected.length === 0;
+  $('btnLearnSelectAll').disabled = list.length === 0;
+  $('btnLearnDeselectAll').disabled = list.length === 0;
+
+  if (list.length === 0) {
+    t.innerHTML = '<div style="text-align:center; padding:20px; color:var(--sub);">Learn 列表为空</div>';
+    return;
+  }
+
+  list.forEach(w => {
+    const checked = learnManageSelected.includes(w.en);
+    const label = document.createElement('label');
+    label.className = 'list-item learn-manage-item';
+    label.innerHTML = `
+      <span class="list-item-left">
+        <input type="checkbox" class="chk-item chk-learn-manage" data-en="${escapeHtml(w.en)}" ${checked ? 'checked' : ''}>
+        <span style="min-width:0; flex:1;">
+          <span class="list-item-word" style="display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(w.en)}</span>
+          <span class="list-item-zh" style="display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(w.zh || '')}</span>
+        </span>
+      </span>
+    `;
+    t.appendChild(label);
+  });
+
+  document.querySelectorAll('.chk-learn-manage').forEach(chk => {
+    chk.addEventListener('change', (e) => {
+      const en = e.target.dataset.en;
+      if (e.target.checked) { if (!learnManageSelected.includes(en)) learnManageSelected.push(en); }
+      else learnManageSelected = learnManageSelected.filter(x => x !== en);
+      removeBtn.textContent = `移出选中 (${learnManageSelected.length})`;
+      removeBtn.disabled = learnManageSelected.length === 0;
+    });
+  });
+}
+
 function renderFavList() {
-  const t = $('favListContent'); t.innerHTML = '';
+  ensureAutoReviewFolder();
+  const t = $('favListContent');
+  t.innerHTML = '';
   S.favFolders.forEach(folder => {
-    const div = document.createElement('div'); div.className = 'folder-item';
-    div.onclick = () => {
+    const div = document.createElement('div');
+    div.className = 'folder-item';
+    div.tabIndex = 0;
+    div.title = folder.id === AUTO_REVIEW_ID ? '系统复习池：可管理单词，不可删除' : '长按或右键管理';
+    div.setAttribute('role', 'button');
+
+    const left = document.createElement('div');
+    left.className = 'folder-name';
+    left.textContent = folder.name;
+
+    const arrow = document.createElement('span');
+    arrow.className = 'folder-arrow';
+    arrow.textContent = '›';
+
+    const enterFolder = () => {
       S.currentFavId = folder.id;
       S.favPool = shuffle(folder.words.slice());
-      S.current = null; S.mode = 'fav';
-      render(); draw();
-    };
-    
-    const left = document.createElement('div'); left.className = 'folder-name';
-    left.innerHTML = `📁 ${folder.name} <span class="folder-count">(${folder.words.length})</span>`;
-    
-    const right = document.createElement('div'); right.className = 'folder-actions';
-    
-    const btnRename = document.createElement('button');
-    btnRename.className = 'btn-small';
-    btnRename.textContent = '✏️';
-    btnRename.onclick = (e) => {
-      e.stopPropagation();
-      const newName = prompt('请输入新的收藏夹名称：', folder.name);
-      if (newName && newName.trim() && newName.trim() !== folder.name) {
-        folder.name = newName.trim();
-        save(); renderFavList();
-      }
-    };
-
-    const btnManage = document.createElement('button');
-    btnManage.className = 'btn-small';
-    btnManage.textContent = '⚙️';
-    btnManage.onclick = (e) => {
-      e.stopPropagation();
-      S.currentFavId = folder.id; S.mode = 'favManage'; S.favManageSelected = [];
+      S.current = null;
+      S.historyList = [];
+      S.mode = 'fav';
       render();
+      draw();
     };
 
-    const btnDel = document.createElement('button');
-    btnDel.className = 'btn-small btn-danger';
-    btnDel.textContent = '🗑️';
-    btnDel.onclick = (e) => {
-      e.stopPropagation();
-      if (S.favFolders.length <= 1) return alert('必须至少保留一个收藏夹！');
-      if (!confirm(`确定要删除收藏夹 "${folder.name}" 吗？里面的单词不会从总词库消失。`)) return;
-      S.favFolders = S.favFolders.filter(f => f.id !== folder.id);
-      if (S.currentFavId === folder.id) S.currentFavId = S.favFolders[0].id;
-      save(); renderFavList();
+    let pressTimer = null;
+    let longPressed = false;
+    const cancelPress = () => { clearTimeout(pressTimer); pressTimer = null; };
+    const startPress = (e) => {
+      longPressed = false;
+      if (e.pointerType === 'mouse') return;
+      cancelPress();
+      pressTimer = setTimeout(() => {
+        longPressed = true;
+        openFolderMenu(folder);
+      }, 500);
     };
 
-    right.appendChild(btnRename);
-    right.appendChild(btnManage);
-    right.appendChild(btnDel);
-    
+    div.addEventListener('pointerdown', startPress);
+    div.addEventListener('pointerup', cancelPress);
+    div.addEventListener('pointerleave', cancelPress);
+    div.addEventListener('pointercancel', cancelPress);
+    div.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      openFolderMenu(folder);
+    });
+    div.addEventListener('click', () => {
+      if (longPressed) { longPressed = false; return; }
+      enterFolder();
+    });
+    div.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); enterFolder(); }
+      if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {
+        e.preventDefault();
+        openFolderMenu(folder);
+      }
+    });
+
     div.appendChild(left);
-    div.appendChild(right);
+    div.appendChild(arrow);
     t.appendChild(div);
   });
 }
+
+/* ===================== 收藏夹选择 / 管理菜单 ===================== */
+let favPickWord = null;
+let folderMenuFolderId = null;
+let folderEditMode = 'create';
+let folderEditFolderId = null;
+
+function openFavPicker(word) {
+  if (!word) return;
+  favPickWord = word;
+  $('favPickerTitle').textContent = `收藏「${word.en}」`;
+  $('favPickNewWrap').hidden = true;
+  $('btnFavPickNew').hidden = false;
+  $('favPickNewName').value = '';
+  renderFavPicker();
+  openSheet('modalFavPicker');
+}
+
+function renderFavPicker() {
+  if (!favPickWord) return;
+  ensureAutoReviewFolder();
+  const list = $('favPickList');
+  list.innerHTML = '';
+  S.favFolders.forEach(folder => {
+    const selected = folder.words.some(w => w.en === favPickWord.en);
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'fav-pick-row' + (selected ? ' selected' : '');
+    row.innerHTML = `
+      <span class="fav-pick-name">${escapeHtml(folder.name)}</span>
+      <span class="fav-pick-count">${folder.words.length}</span>
+      <span class="fav-pick-check">${selected ? '✓' : ''}</span>
+    `;
+    row.addEventListener('click', () => {
+      const inFolder = folder.words.some(w => w.en === favPickWord.en);
+      if (inFolder) {
+        folder.words = folder.words.filter(w => w.en !== favPickWord.en);
+        if (S.mode === 'fav' && folder.id === S.currentFavId) {
+          S.favPool = S.favPool.filter(w => w.en !== favPickWord.en);
+        }
+      } else {
+        folder.words.push(favPickWord);
+        if (S.mode === 'fav' && folder.id === S.currentFavId) {
+          if (!S.favPool.some(w => w.en === favPickWord.en)) S.favPool.push(favPickWord);
+        }
+      }
+      save();
+      renderFavPicker();
+      render();
+    });
+    list.appendChild(row);
+  });
+}
+
+function openFolderMenu(folder) {
+  if (!folder) return;
+  ensureAutoReviewFolder();
+  const isAuto = folder.id === AUTO_REVIEW_ID;
+  folderMenuFolderId = folder.id;
+  $('folderMenuTitle').textContent = isAuto ? `${folder.name} · 系统文件夹` : folder.name;
+  $('btnFolderRename').hidden = isAuto;
+  $('btnFolderDelete').hidden = isAuto;
+  openSheet('modalFolderMenu');
+}
+
+function openFolderEdit(mode, folderId) {
+  const folder = S.favFolders.find(f => f.id === folderId);
+  if (mode === 'rename' && !folder) return;
+  if (mode === 'rename' && folder.id === AUTO_REVIEW_ID) return;
+  folderEditMode = mode;
+  folderEditFolderId = folder ? folder.id : null;
+  $('folderEditTitle').textContent = mode === 'rename' ? '重命名收藏夹' : '新建收藏夹';
+  $('folderEditInput').value = mode === 'rename' ? folder.name : '';
+  closeSheet('modalFolderMenu');
+  openSheet('modalFolderEdit');
+  setTimeout(() => $('folderEditInput').focus(), 50);
+}
+
+function confirmFolderEdit() {
+  const name = $('folderEditInput').value.trim();
+  if (!name) { $('folderEditInput').focus(); return; }
+  if (folderEditMode === 'create') {
+    S.favFolders.push({ id: generateId(), name, words: [] });
+  } else {
+    const folder = S.favFolders.find(f => f.id === folderEditFolderId);
+    if (!folder) { closeSheet('modalFolderEdit'); return; }
+    if (folder.id === AUTO_REVIEW_ID) { closeSheet('modalFolderEdit'); return; }
+    folder.name = name;
+  }
+  save();
+  closeSheet('modalFolderEdit');
+  render();
+}
+
+$('btnFavPickNew').addEventListener('click', () => {
+  $('btnFavPickNew').hidden = true;
+  $('favPickNewWrap').hidden = false;
+  $('favPickNewName').value = '';
+  $('favPickNewName').focus();
+});
+
+$('btnFavPickNewCancel').addEventListener('click', () => {
+  $('favPickNewWrap').hidden = true;
+  $('btnFavPickNew').hidden = false;
+});
+
+$('btnFavPickNewConfirm').addEventListener('click', () => {
+  const name = $('favPickNewName').value.trim();
+  if (!name || !favPickWord) { $('favPickNewName').focus(); return; }
+  S.favFolders.push({ id: generateId(), name, words: [favPickWord] });
+  save();
+  $('favPickNewWrap').hidden = true;
+  $('btnFavPickNew').hidden = false;
+  $('favPickNewName').value = '';
+  renderFavPicker();
+  render();
+});
+
+$('favPickNewName').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); $('btnFavPickNewConfirm').click(); }
+});
+
+$('btnFolderRename').addEventListener('click', () => {
+  const folder = S.favFolders.find(f => f.id === folderMenuFolderId);
+  if (folder) openFolderEdit('rename', folder.id);
+});
+
+$('btnFolderManage').addEventListener('click', () => {
+  const folder = S.favFolders.find(f => f.id === folderMenuFolderId);
+  if (!folder) return;
+  S.currentFavId = folder.id;
+  S.mode = 'favManage';
+  S.favManageSelected = [];
+  closeSheet('modalFolderMenu');
+  render();
+});
+
+$('btnFolderDelete').addEventListener('click', () => {
+  const folder = S.favFolders.find(f => f.id === folderMenuFolderId);
+  if (!folder) return;
+  if (folder.id === AUTO_REVIEW_ID) return alert('🔄 自动复习池是系统文件夹，不能删除');
+  if (S.favFolders.length <= 1) return alert('必须至少保留一个收藏夹！');
+  if (!confirm(`确定要删除收藏夹 "${folder.name}" 吗？里面的单词不会从总词库消失。`)) return;
+  S.favFolders = S.favFolders.filter(f => f.id !== folder.id);
+  if (S.currentFavId === folder.id) S.currentFavId = S.favFolders[0].id;
+  folderMenuFolderId = null;
+  save();
+  closeSheet('modalFolderMenu');
+  render();
+});
+
+$('btnFolderEditConfirm').addEventListener('click', confirmFolderEdit);
+$('btnFolderEditCancel').addEventListener('click', () => closeSheet('modalFolderEdit'));
+$('folderEditInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); confirmFolderEdit(); }
+});
+
+document.querySelectorAll('[data-close]').forEach(btn => {
+  btn.addEventListener('click', () => closeSheet(btn.dataset.close));
+});
+document.querySelectorAll('.sheet-modal').forEach(modal => {
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) closeSheet(modal.id);
+  });
+});
 
 function renderFavManage() {
   const t = $('favManageContent'); t.innerHTML = '';
@@ -679,7 +1088,7 @@ function renderFavManage() {
   const query = $('searchFav').value.trim().toLowerCase();
   
   $('favManageTitle').textContent = `管理: ${folder.name}`;
-  $('favMoveTarget').innerHTML = S.favFolders.filter(f => f.id !== folder.id).map(f => `<option value="${f.id}">${f.name}</option>`).join('');
+  $('favMoveTarget').innerHTML = S.favFolders.filter(f => f.id !== folder.id).map(f => `<option value="${f.id}">${escapeHtml(f.name)}</option>`).join('');
   if (S.favFolders.length <= 1) {
     $('btnBatchMoveFav').style.display = 'none'; $('favMoveTarget').style.display = 'none';
   } else {
@@ -719,9 +1128,10 @@ function renderFavManage() {
 function deleteWordsFromSystem(wordsToDelete) {
   const delSet = new Set(wordsToDelete);
   S.words = S.words.filter(w => !delSet.has(w.en)); 
-  S.learnList = S.learnList.filter(w => !delSet.has(w.en)); 
+  S.learnList = S.learnList.filter(w => !delSet.has(w.en));
   S.learnPool = S.learnPool.filter(w => !delSet.has(w.en));
   S.favFolders.forEach(folder => { folder.words = folder.words.filter(w => !delSet.has(w.en)); });
+  S.historyList = S.historyList.filter(w => !delSet.has(w.en));
   if(S.current && delSet.has(S.current.en)) { S.current = null; draw(); }
   S.selectedWords = []; save(); renderTable(); render();
 }
@@ -729,16 +1139,32 @@ function deleteWordsFromSystem(wordsToDelete) {
 $('searchTable').addEventListener('input', renderTable);
 $('searchFav').addEventListener('input', renderFavManage);
 
-$('btnCreateFolder').addEventListener('click', () => {
-  const name = prompt('请输入新收藏夹的名称：');
-  if (name && name.trim()) {
-    const newId = generateId();
-    S.favFolders.push({ id: newId, name: name.trim(), words: [] });
-    save(); renderFavList();
-  }
-});
+$('btnCreateFolder').addEventListener('click', () => openFolderEdit('create'));
 
 $('btnBackToFavList').addEventListener('click', () => { S.mode = 'favList'; render(); });
+$('btnLearnManage').addEventListener('click', openLearnManage);
+$('btnBackFromLearnManage').addEventListener('click', () => switchTab('learn'));
+$('btnLearnSelectAll').addEventListener('click', () => {
+  learnManageSelected = S.learnList.map(w => w.en);
+  renderLearnManage();
+});
+$('btnLearnDeselectAll').addEventListener('click', () => {
+  learnManageSelected = [];
+  renderLearnManage();
+});
+$('btnLearnBatchRemove').addEventListener('click', () => {
+  if (S.mode !== 'learnManage' || learnManageSelected.length === 0) return;
+  const set = new Set(learnManageSelected);
+  S.learnList = S.learnList.filter(w => !set.has(w.en));
+  S.learnPool = S.learnPool.filter(w => !set.has(w.en));
+  S.current = null;
+  S.showZh = false;
+  learnManageSelected = [];
+  S.mode = 'learn';
+  save();
+  render();
+  nextWord();
+});
 $('btnToggleSelectMode').addEventListener('click', () => { S.selectMode = !S.selectMode; renderTable(); });
 $('btnSelectAll').addEventListener('click', () => { S.selectedWords = (S.selectedWords.length === S.words.length) ? [] : S.words.map(w => w.en); renderTable(); });
 
@@ -785,6 +1211,23 @@ $('btnFavSelectAll').addEventListener('click', () => {
   renderFavManage();
 });
 
+$('btnShuffleFav').addEventListener('click', () => {
+  const folder = getCurrentFav();
+  if (!folder) return;
+  shuffle(folder.words);
+  if (S.currentFavId === folder.id) {
+    S.favPool = shuffle(folder.words.slice());
+    S.favSeen = [];
+  }
+  S.favManageSelected = [];
+  save();
+  renderFavManage();
+  const btn = $('btnShuffleFav');
+  btn.textContent = '✅ 已打乱';
+  setTimeout(() => { btn.textContent = '🔀 打乱'; }, 800);
+  console.log(`🔀 已打乱收藏夹「${folder.name}」，共 ${folder.words.length} 词`);
+});
+
 $('btnBatchMoveFav').addEventListener('click', () => {
   if (S.favManageSelected.length === 0) return alert('请先勾选单词');
   const targetId = $('favMoveTarget').value;
@@ -814,15 +1257,43 @@ $('btnBatchRemoveFav').addEventListener('click', () => {
 $('btnRandomDraw').addEventListener('click', () => {
   const count = parseInt($('inputRandomCount').value);
   if (!count || count <= 0) return alert('请输入要抽取的数量！');
-  const availableWords = S.words.filter(w => !S.learnList.some(lw => lw.en === w.en));
-  if (availableWords.length === 0) return alert('总表里的词都已经在 Learn 里啦！');
-  if (availableWords.length < count) { if(!confirm(`总表剩余未加入的词只有 ${availableWords.length} 个，是否全部加入？`)) return; }
+  const learnSet = new Set(S.learnList.map(w => w.en));
+  const favSet = getFavWordSet();
+  const availableWords = S.words.filter(w => w.isLearned !== true && !learnSet.has(w.en) && !favSet.has(w.en));
+  if (availableWords.length === 0) return alert('总表里的词都已经在 Learn 或收藏夹里啦！');
+  if (availableWords.length < count) { if(!confirm(`总表剩余未学习且未收藏的词只有 ${availableWords.length} 个，是否全部加入？`)) return; }
   const shuffled = shuffle(availableWords.slice()); const pickedWords = shuffled.slice(0, Math.min(count, availableWords.length));
-  pickedWords.forEach(w => { S.learnList.push(w); S.learnPool.push(w); });
+  const autoFolder = getAutoReviewFolder();
+  pickedWords.forEach(w => {
+    S.learnList.push(w);
+    S.learnPool.push(w);
+    // 自动复习池：抽取时静默收集，按 en 去重。
+    if (!autoFolder.words.some(x => x.en === w.en)) autoFolder.words.push(w);
+  });
+  shuffle(autoFolder.words);
   save(); renderTable(); render(); alert(`✅ 成功随机抽取 ${pickedWords.length} 个单词加入 Learn！`);
 });
 
-$('btnClearLearn').addEventListener('click', () => { if(!confirm('确定要清空 Learn 队列吗？（总词库依然保留）')) return; S.learnList = []; S.learnPool = []; save(); renderTable(); render(); });
+function clearLearnQueue() {
+  if(!confirm('确定要清空 Learn 队列吗？（总词库和自动复习池依然保留）')) return;
+  S.learnList = []; S.learnPool = []; S.current = null; S.showZh = false; S.historyList = [];
+  save();
+  if (S.mode === 'learn') { render(); draw(); }
+  else { renderTable(); render(); }
+}
+
+$('btnClearLearn').addEventListener('click', clearLearnQueue);
+$('btnRemoveLearn').addEventListener('click', () => {
+  if (S.mode !== 'learn' || !S.current) return;
+  const en = S.current.en;
+  S.learnList = S.learnList.filter(w => w.en !== en);
+  S.learnPool = S.learnPool.filter(w => w.en !== en);
+  S.current = null;
+  S.showZh = false;
+  save();
+  render();
+  nextWord();
+});
 
 function renderApiList() {
   const tbody = $('apiListBody'); tbody.innerHTML = '';
@@ -859,64 +1330,109 @@ function renderApiList() {
   });
 }
 
-$('btnCreateApi').addEventListener('click', () => {
-  const newKey = prompt("请输入你的 DeepSeek API Key (sk-...):");
-  if (newKey && newKey.trim()) {
-    const keyStr = newKey.trim();
-    const keyRegex = /^sk-[a-zA-Z0-9]{20,100}$/;
-    if (!keyRegex.test(keyStr)) {
-      alert('❌ 格式错误！\n\n有效的 API Key 应该以 "sk-" 开头，且后面包含至少 20 位的字母或数字。\n请检查是否复制了多余的空格或错误的字符。');
-      return;
-    }
-    const newId = generateId(); 
-    if (!S.apiKeys) S.apiKeys = [];
-    S.apiKeys.push({ id: newId, key: keyStr }); 
-    if (!S.currentApiId) S.currentApiId = newId; 
-    save(); renderApiList();
+function saveApiKeyFromInput() {
+  const keyStr = $('apiKeyInput').value.trim();
+  if (!keyStr) { $('apiKeyInput').focus(); return; }
+  const keyRegex = /^sk-[a-zA-Z0-9]{20,100}$/;
+  if (!keyRegex.test(keyStr)) {
+    alert('❌ 格式错误！\n\n有效的 API Key 应该以 "sk-" 开头，且后面包含至少 20 位的字母或数字。\n请检查是否复制了多余的空格或错误的字符。');
+    return;
   }
+  const newId = generateId();
+  if (!S.apiKeys) S.apiKeys = [];
+  S.apiKeys.push({ id: newId, key: keyStr });
+  if (!S.currentApiId) S.currentApiId = newId;
+  save();
+  renderApiList();
+  $('apiKeyInput').value = '';
+  closeSheet('modalApiKey');
+}
+
+$('btnCreateApi').addEventListener('click', () => {
+  $('apiKeyInput').value = '';
+  openSheet('modalApiKey');
+  setTimeout(() => $('apiKeyInput').focus(), 50);
+});
+$('btnApiKeyConfirm').addEventListener('click', saveApiKeyFromInput);
+$('btnApiKeyCancel').addEventListener('click', () => closeSheet('modalApiKey'));
+$('apiKeyInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); saveApiKeyFromInput(); }
 });
 
-// 🌟 调用刚封装的 nextWord()，而不是点击不可见的 btnNext
-$('card').addEventListener('click', ()=>{ 
-  if(S.current == null) return; 
-  if (!S.showZh && !S.alwaysZh) {
-    S.showZh = true; $('zh').classList.remove('hide'); save();
-  } else {
-    S.showZh = false; $('zh').classList.add('hide');
-    requestAnimationFrame(() => { nextWord(); });
-  }
+// 长按卡片 600ms 清空 Learn；短按仍是“显示中文 / 下一个”。
+let cardPressTimer = null;
+let cardLongPressed = false;
+const cancelCardPress = () => { clearTimeout(cardPressTimer); cardPressTimer = null; };
+$('card').addEventListener('pointerdown', () => {
+  if (S.mode !== 'learn' || S.current == null) return;
+  cardLongPressed = false;
+  cancelCardPress();
+  cardPressTimer = setTimeout(() => {
+    cardLongPressed = true;
+    clearLearnQueue();
+  }, 600);
+});
+['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => $('card').addEventListener(ev, cancelCardPress));
+$('card').addEventListener('contextmenu', (e) => e.preventDefault());
+
+// 🌟 分屏点击：左半边回退，右半边沿用“显示中文 / 下一个”
+$('card').addEventListener('click', (e)=>{
+  if (cardLongPressed) { cardLongPressed = false; return; }
+  if(S.current == null) return;
+  const touch = e.changedTouches && e.changedTouches[0];
+  const clientX = touch ? touch.clientX : e.clientX;
+  if (clientX < window.innerWidth / 2) goBackCard();
+  else advanceCard(false);
 });
 
 $('btnSpeak').addEventListener('click', ()=>{ if(S.current == null) return; if(window.speechSynthesis){ const u = new SpeechSynthesisUtterance(S.current.en); u.lang = 'en-US'; speechSynthesis.cancel(); speechSynthesis.speak(u); } });
 
 document.addEventListener('keydown', (e) => {
-  if (e.code === 'Space' && (S.mode === 'learn' || S.mode === 'fav') && !$('modalImport').classList.contains('show') && !$('modalSettings').classList.contains('show')) {
-    e.preventDefault(); 
-    if (S.current == null) return;
-    const cardEl = $('card'); cardEl.style.transform = 'scale(0.98)'; setTimeout(() => { cardEl.style.transform = ''; }, 100);
-    if (!S.showZh && !S.alwaysZh) {
-      S.showZh = true; $('zh').classList.remove('hide'); save();
-    } else {
-      S.showZh = false; $('zh').classList.add('hide');
-      requestAnimationFrame(() => { nextWord(); });
-    }
+  if (e.key === 'Escape') {
+    document.querySelectorAll('.modal.show').forEach(m => closeSheet(m.id));
+    return;
+  }
+  const cardMode = (S.mode === 'learn' || S.mode === 'fav') && !document.querySelector('.modal.show');
+  if (!cardMode) return;
+  if (e.code === 'Space' || e.key === 'ArrowRight') {
+    e.preventDefault();
+    advanceCard(true);
+  } else if (e.key === 'ArrowLeft') {
+    e.preventDefault();
+    goBackCard();
   }
 });
 
 $('btnFav').addEventListener('click', ()=>{
-  if(S.current == null) return; 
-  const folder = getCurrentFav();
-  const i = folder.words.findIndex(w => w.en === S.current.en);
-  if(i >= 0){ folder.words.splice(i,1); const p = S.favPool.findIndex(w => w.en === S.current.en); if(p>=0) S.favPool.splice(p,1); } 
-  else { folder.words.push(S.current); S.favPool.push(S.current); }
-  render(); save();
+  if(S.current == null) return;
+  openFavPicker(S.current);
 });
 
 function switchTab(mode) {
-  S.mode = mode; 
-  $('tabLearn').classList.toggle('active', mode === 'learn'); $('tabTable').classList.toggle('active', mode === 'table'); $('tabFav').classList.toggle('active', mode === 'favList');
-  if(mode === 'learn') { S.current = null; S.learnPool = shuffle(S.learnList.slice()); }
-  render(); if(mode === 'learn' || mode === 'fav') draw(); else save();
+  const wasLearn = S.mode === 'learn';
+  S.mode = mode;
+  if (mode === 'learn') {
+    // 切回 Learn 时保留当前单词和剩余进度，不再强制刷新。
+    if (!wasLearn) {
+      const keepCurrent = S.current && S.learnList.some(w => w.en === S.current.en);
+      if (!keepCurrent) {
+        S.current = null;
+        S.learnPool = shuffle(S.learnList.slice());
+        S.historyList = [];
+      }
+    }
+    render();
+    if (S.current == null) draw(); else save();
+    return;
+  }
+  render();
+  if (mode === 'fav') {
+    const folder = getCurrentFav();
+    S.favPool = shuffle(folder.words.slice());
+    S.favSeen = [];
+    S.historyList = [];
+    draw();
+  } else save();
 }
 $('tabLearn').addEventListener('click', ()=>switchTab('learn'));
 $('tabTable').addEventListener('click', ()=>switchTab('table'));
@@ -931,9 +1447,47 @@ $('chkAutoClean').addEventListener('change', (e)=>{ S.autoClean = e.target.check
 
 $('btnReset').addEventListener('click', ()=>{ 
   if(!confirm('重置当前进度？')) return; 
-  if(S.mode==='learn'){ S.learnPool = shuffle(S.learnList.slice()); } else if (S.mode === 'fav') { S.favPool = shuffle(getCurrentFav().words.slice()); } 
+  if(S.mode==='learn'){ S.learnPool = shuffle(S.learnList.slice()); } else if (S.mode === 'fav') { S.favPool = shuffle(getCurrentFav().words.slice()); }
+  S.historyList = [];
   $('modalSettings').classList.remove('show'); draw(); save();
 });
+
+// 导入时把新音标合并进已有词条：不覆盖原释义/学习状态，只补空缺的 phonetic。
+// 同一词在 S.words、Learn、收藏夹、历史里可能是不同对象（localStorage 反序列化后不共享引用），
+// 因此按 en 同步到所有副本。
+function mergeImportedWords(newList) {
+  const wordMap = new Map((S.words || []).filter(w => w && w.en).map(w => [w.en, w]));
+  const phoneticByEn = new Map();
+  let added = 0;
+  let enriched = 0;
+
+  for (const nw of newList) {
+    if (!nw || !nw.en) continue;
+    if (nw.phonetic) phoneticByEn.set(nw.en, nw.phonetic);
+    const existing = wordMap.get(nw.en);
+    if (!existing) {
+      S.words.push(nw);
+      wordMap.set(nw.en, nw);
+      added++;
+    } else if (!existing.phonetic && nw.phonetic) {
+      existing.phonetic = nw.phonetic;
+      enriched++;
+    }
+  }
+
+  const copies = [S.learnList, S.learnPool, S.historyList, ...(S.favFolders || []).map(f => (f && f.words) || [])];
+  for (const list of copies) {
+    if (!Array.isArray(list)) continue;
+    for (const w of list) {
+      if (w && !w.phonetic && phoneticByEn.has(w.en)) w.phonetic = phoneticByEn.get(w.en);
+    }
+  }
+  if (S.current && !S.current.phonetic && phoneticByEn.has(S.current.en)) {
+    S.current.phonetic = phoneticByEn.get(S.current.en);
+  }
+
+  return { added, enriched };
+}
 
 $('btnParse').addEventListener('click', ()=>{
   const rawVal = $('ta').value; const newList = parseLines(rawVal);
@@ -942,11 +1496,17 @@ $('btnParse').addEventListener('click', ()=>{
     const looksDirty = rawVal.includes('<table>') || rawVal.includes('<br>') || (rawVal.match(/\[/g) || []).length > 5;
     if (looksDirty && !confirm('⚠️ 警告：检测到文本未清洗，包含大量乱码/音标/HTML标签！\n\n直接导入会导致词库非常混乱。\n\n确定要强制直接导入吗？')) return;
   }
-  newList.forEach(nw => { if(!S.words.some(w => w.en === nw.en)) S.words.push(nw); });
+  const stats = mergeImportedWords(newList);
   $('ta').value = ''; $('preview').innerHTML = '';
-  $('cleanStatus').textContent = `✅ 已成功导入！当前总表 ${S.words.length} 词。请继续粘贴下一批...`;
+  if (stats.added || stats.enriched) {
+    $('cleanStatus').textContent = `✅ 已导入：新增 ${stats.added} 词，补全 ${stats.enriched} 个旧词音标。当前总表 ${S.words.length} 词。`;
+  } else {
+    $('cleanStatus').textContent = `ℹ️ 这批词都已在词库中，且没有新的音标可补全。当前总表 ${S.words.length} 词。`;
+  }
   isTextCleaned = false;
+  save();
   if (S.mode === 'table') renderTable();
+  else if (S.current && (S.mode === 'learn' || S.mode === 'fav')) render();
 });
 
 async function executeClean() {
