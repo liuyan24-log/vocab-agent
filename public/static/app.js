@@ -8,7 +8,7 @@ let S = {
   favPool: [], favSeen: [], 
   mode: 'learn', current: null, showZh: false, alwaysZh: false, autoClean: false,
   apiKeys: [], currentApiId: null, selectMode: false, selectedWords: [], theme: 'dark',
-  favManageSelected: [], historyList: []
+  favManageSelected: [], historyBack: [], historyForward: []
 };
 let isTextCleaned = false;
 let learnManageSelected = [];
@@ -121,7 +121,12 @@ async function load(){
       S.favFolders = [{ id: 'default', name: '主收藏', words: [] }];
       S.currentFavId = 'default';
     }
-    if (!Array.isArray(S.historyList)) S.historyList = [];
+    // 旧版单向 historyList 迁移成后退栈；前进栈从空开始。
+    if (!Array.isArray(S.historyBack)) {
+      S.historyBack = Array.isArray(S.historyList) ? S.historyList : [];
+    }
+    if (!Array.isArray(S.historyForward)) S.historyForward = [];
+    delete S.historyList;
 
     // 旧版隐藏复习池一次性迁入系统收藏夹，然后移除旧字段，避免双写。
     const hadAuto = S.favFolders.some(f => f.id === AUTO_REVIEW_ID);
@@ -597,37 +602,41 @@ function draw(){
   S.showZh = false; $('zh').classList.add('hide'); render(); save();
 }
 
-// 🌟 封装“下一个”的逻辑
+function clearHistoryStacks() {
+  S.historyBack = [];
+  S.historyForward = [];
+}
+
+// 🌟 抽取下一个全新单词。
 function nextWord() {
-  // 新一轮开始（抽取池为空后重洗）时清空历史栈，避免左键回退跨越轮次。
-  let newRound = false;
+  // 新一轮开始（抽取池为空后重洗）时重新洗牌；历史不清空，保持浏览器式连续历史。
   if(S.mode === 'learn' && S.learnPool.length===0 && S.learnList.length>0) {
     S.learnPool = shuffle(S.learnList.slice());
     // 自动复习池：每轮重洗时随机打乱；它不会被“清空 Learn”删除。
     shuffle(getAutoReviewFolder().words);
-    newRound = true;
   }
   if(S.mode === 'fav' && S.favPool.length===0 && getCurrentFav().words.length>0) {
     S.favPool = shuffle(getCurrentFav().words.slice());
-    newRound = true;
   }
-  if (newRound) S.historyList = [];
-  else if (S.current) S.historyList.push(S.current);
+  // 抽取新词 = 新时间线：当前词进后退栈，前进栈必须清空。
+  if (S.current) S.historyBack.push(S.current);
+  S.historyForward = [];
   draw();
 }
 
-// 点击左半边 / 方向键左：回退到历史栈中的上一个词。
+// 点击左半边 / 方向键左：后退。当前词进前进栈，再从后退栈取出上一个词。
 function goBackCard() {
   if (S.mode !== 'learn' && S.mode !== 'fav') return;
-  if (!S.historyList.length) { showToast('已经是第一个单词啦'); return; }
-  S.current = S.historyList.pop();
+  if (!S.historyBack.length) { showToast('已经是第一个单词啦'); return; }
+  if (S.current) S.historyForward.push(S.current);
+  S.current = S.historyBack.pop();
   S.showZh = false;
   $('zh').classList.add('hide');
   render();
   save();
 }
 
-// 点击右半边 / 空格 / 方向键右：未显示中文则显示，已显示则下一个。
+// 点击右半边 / 空格 / 方向键右：先显示中文；已显示时优先前进，没有前进历史才抽新词。
 function advanceCard(withAnim) {
   if (S.current == null) return;
   if (withAnim) {
@@ -635,10 +644,19 @@ function advanceCard(withAnim) {
   }
   if (!S.showZh && !S.alwaysZh) {
     S.showZh = true; $('zh').classList.remove('hide'); save();
-  } else {
-    S.showZh = false; $('zh').classList.add('hide');
-    requestAnimationFrame(() => { nextWord(); });
+    return;
   }
+  if (S.historyForward.length) {
+    if (S.current) S.historyBack.push(S.current);
+    S.current = S.historyForward.pop();
+    S.showZh = false;
+    $('zh').classList.add('hide');
+    render();
+    save();
+    return;
+  }
+  S.showZh = false; $('zh').classList.add('hide');
+  requestAnimationFrame(() => { nextWord(); });
 }
 
 function updateTabs() {
@@ -801,6 +819,7 @@ function openLearnManage() {
   if (S.mode !== 'learn') return;
   learnManageSelected = [];
   S.mode = 'learnManage';
+  clearHistoryStacks();
   render();
 }
 
@@ -872,7 +891,7 @@ function renderFavList() {
       S.currentFavId = folder.id;
       S.favPool = shuffle(folder.words.slice());
       S.current = null;
-      S.historyList = [];
+      clearHistoryStacks();
       S.mode = 'fav';
       render();
       draw();
@@ -1049,6 +1068,7 @@ $('btnFolderManage').addEventListener('click', () => {
   S.currentFavId = folder.id;
   S.mode = 'favManage';
   S.favManageSelected = [];
+  clearHistoryStacks();
   closeSheet('modalFolderMenu');
   render();
 });
@@ -1131,7 +1151,8 @@ function deleteWordsFromSystem(wordsToDelete) {
   S.learnList = S.learnList.filter(w => !delSet.has(w.en));
   S.learnPool = S.learnPool.filter(w => !delSet.has(w.en));
   S.favFolders.forEach(folder => { folder.words = folder.words.filter(w => !delSet.has(w.en)); });
-  S.historyList = S.historyList.filter(w => !delSet.has(w.en));
+  S.historyBack = S.historyBack.filter(w => w && !delSet.has(w.en));
+  S.historyForward = S.historyForward.filter(w => w && !delSet.has(w.en));
   if(S.current && delSet.has(S.current.en)) { S.current = null; draw(); }
   S.selectedWords = []; save(); renderTable(); render();
 }
@@ -1141,7 +1162,7 @@ $('searchFav').addEventListener('input', renderFavManage);
 
 $('btnCreateFolder').addEventListener('click', () => openFolderEdit('create'));
 
-$('btnBackToFavList').addEventListener('click', () => { S.mode = 'favList'; render(); });
+$('btnBackToFavList').addEventListener('click', () => { S.mode = 'favList'; clearHistoryStacks(); render(); });
 $('btnLearnManage').addEventListener('click', openLearnManage);
 $('btnBackFromLearnManage').addEventListener('click', () => switchTab('learn'));
 $('btnLearnSelectAll').addEventListener('click', () => {
@@ -1161,6 +1182,7 @@ $('btnLearnBatchRemove').addEventListener('click', () => {
   S.showZh = false;
   learnManageSelected = [];
   S.mode = 'learn';
+  clearHistoryStacks();
   save();
   render();
   nextWord();
@@ -1276,7 +1298,7 @@ $('btnRandomDraw').addEventListener('click', () => {
 
 function clearLearnQueue() {
   if(!confirm('确定要清空 Learn 队列吗？（总词库和自动复习池依然保留）')) return;
-  S.learnList = []; S.learnPool = []; S.current = null; S.showZh = false; S.historyList = [];
+  S.learnList = []; S.learnPool = []; S.current = null; S.showZh = false; clearHistoryStacks();
   save();
   if (S.mode === 'learn') { render(); draw(); }
   else { renderTable(); render(); }
@@ -1290,6 +1312,7 @@ $('btnRemoveLearn').addEventListener('click', () => {
   S.learnPool = S.learnPool.filter(w => w.en !== en);
   S.current = null;
   S.showZh = false;
+  clearHistoryStacks();
   save();
   render();
   nextWord();
@@ -1410,7 +1433,9 @@ $('btnFav').addEventListener('click', ()=>{
 
 function switchTab(mode) {
   const wasLearn = S.mode === 'learn';
+  const modeChanged = S.mode !== mode;
   S.mode = mode;
+  if (modeChanged) clearHistoryStacks();
   if (mode === 'learn') {
     // 切回 Learn 时保留当前单词和剩余进度，不再强制刷新。
     if (!wasLearn) {
@@ -1418,7 +1443,6 @@ function switchTab(mode) {
       if (!keepCurrent) {
         S.current = null;
         S.learnPool = shuffle(S.learnList.slice());
-        S.historyList = [];
       }
     }
     render();
@@ -1430,7 +1454,6 @@ function switchTab(mode) {
     const folder = getCurrentFav();
     S.favPool = shuffle(folder.words.slice());
     S.favSeen = [];
-    S.historyList = [];
     draw();
   } else save();
 }
@@ -1448,7 +1471,7 @@ $('chkAutoClean').addEventListener('change', (e)=>{ S.autoClean = e.target.check
 $('btnReset').addEventListener('click', ()=>{ 
   if(!confirm('重置当前进度？')) return; 
   if(S.mode==='learn'){ S.learnPool = shuffle(S.learnList.slice()); } else if (S.mode === 'fav') { S.favPool = shuffle(getCurrentFav().words.slice()); }
-  S.historyList = [];
+  clearHistoryStacks();
   $('modalSettings').classList.remove('show'); draw(); save();
 });
 
@@ -1475,7 +1498,7 @@ function mergeImportedWords(newList) {
     }
   }
 
-  const copies = [S.learnList, S.learnPool, S.historyList, ...(S.favFolders || []).map(f => (f && f.words) || [])];
+  const copies = [S.learnList, S.learnPool, S.historyBack, S.historyForward, ...(S.favFolders || []).map(f => (f && f.words) || [])];
   for (const list of copies) {
     if (!Array.isArray(list)) continue;
     for (const w of list) {
