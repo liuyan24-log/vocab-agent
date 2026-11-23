@@ -221,6 +221,9 @@ main {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.list-item-zh.zh-hide { display: none; }
+.fav-word-toggle { cursor: pointer; }
+.fav-word-toggle:active { opacity: 0.6; }
 .btn-add {
   background: rgba(10,132,255,0.1);
   color: var(--blue);

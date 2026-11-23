@@ -889,12 +889,20 @@ function renderFavList() {
 
     const enterFolder = () => {
       S.currentFavId = folder.id;
-      S.favPool = shuffle(folder.words.slice());
-      S.current = null;
-      clearHistoryStacks();
+      // 同一夹子重新进入时保留当前单词和剩余池，避免每次进来都换词/重置进度。
+      const keepProgress = S.current
+        && S.favPool.length > 0
+        && folder.words.some(w => w.en === S.current.en);
+      if (!keepProgress) {
+        S.favPool = shuffle(folder.words.slice());
+        S.favSeen = [];
+        S.current = null;
+        clearHistoryStacks();
+      }
       S.mode = 'fav';
+      S.showZh = false;
       render();
-      draw();
+      if (keepProgress) save(); else draw();
     };
 
     let pressTimer = null;
@@ -1115,24 +1123,30 @@ function renderFavManage() {
     $('btnBatchMoveFav').style.display = 'block'; $('favMoveTarget').style.display = 'block';
   }
 
-  if (folder.words.length === 0) { t.innerHTML = '<div style="text-align:center; padding:20px; color:var(--sub);">当前夹子是空的</div>'; return; }
   const filtered = folder.words.filter(w => w.en.toLowerCase().includes(query) || (w.zh && w.zh.includes(query)));
-  if (filtered.length === 0) { t.innerHTML = '<div style="text-align:center; padding:20px; color:var(--sub);">没有找到匹配的单词</div>'; return; }
+  const allFilteredSelected = filtered.length > 0 && filtered.every(w => S.favManageSelected.includes(w.en));
+  $('btnFavSelectAll').textContent = allFilteredSelected ? '取消全选' : '全选';
 
-  $('btnFavSelectAll').textContent = (S.favManageSelected.length === folder.words.length) ? '取消全选' : '全选';
+  if (folder.words.length === 0) { t.innerHTML = '<div style="text-align:center; padding:20px; color:var(--sub);">当前夹子是空的</div>'; return; }
+  if (filtered.length === 0) { t.innerHTML = '<div style="text-align:center; padding:20px; color:var(--sub);">没有找到匹配的单词</div>'; return; }
 
   filtered.forEach(w => {
     const isChecked = S.favManageSelected.includes(w.en);
     const div = document.createElement('div'); div.className = 'list-item';
     div.innerHTML = `
       <div class="list-item-left">
-        <input type="checkbox" class="chk-item-fav" data-en="${w.en}" ${isChecked ? 'checked' : ''}>
+        <input type="checkbox" class="chk-item-fav" data-en="${escapeHtml(w.en)}" ${isChecked ? 'checked' : ''}>
         <div style="min-width: 0; flex: 1;">
-          <div class="list-item-word" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${w.en}</div>
-          <div class="list-item-zh" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${w.zh}</div>
+          <div class="list-item-word fav-word-toggle" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="点击显示/隐藏中文">${escapeHtml(w.en)}</div>
+          <div class="list-item-zh zh-hide" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(w.zh || '')}</div>
         </div>
       </div>
     `;
+    const wordEl = div.querySelector('.list-item-word');
+    wordEl.addEventListener('click', () => {
+      const zhEl = div.querySelector('.list-item-zh');
+      if (zhEl) zhEl.classList.toggle('zh-hide');
+    });
     t.appendChild(div);
   });
 
@@ -1229,7 +1243,16 @@ $('btnBatchAddFav').addEventListener('click', () => {
 
 $('btnFavSelectAll').addEventListener('click', () => {
   const folder = getCurrentFav();
-  S.favManageSelected = (S.favManageSelected.length === folder.words.length) ? [] : folder.words.map(w => w.en);
+  const query = $('searchFav').value.trim().toLowerCase();
+  const filtered = folder.words.filter(w => w.en.toLowerCase().includes(query) || (w.zh && w.zh.includes(query)));
+  const allFilteredSelected = filtered.length > 0 && filtered.every(w => S.favManageSelected.includes(w.en));
+  if (allFilteredSelected) {
+    S.favManageSelected = [];
+  } else {
+    filtered.forEach(w => {
+      if (!S.favManageSelected.includes(w.en)) S.favManageSelected.push(w.en);
+    });
+  }
   renderFavManage();
 });
 
@@ -1250,6 +1273,14 @@ $('btnShuffleFav').addEventListener('click', () => {
   console.log(`🔀 已打乱收藏夹「${folder.name}」，共 ${folder.words.length} 词`);
 });
 
+// 批量转移/移除后，把已经不在当前夹子里的词从复习池清掉，避免之后抽到“幽灵词”。
+function pruneFavPoolToCurrentFolder(folder) {
+  const allowed = new Set(folder.words.map(w => w.en));
+  S.favPool = (S.favPool || []).filter(w => w && allowed.has(w.en));
+  S.favSeen = (S.favSeen || []).filter(w => w && allowed.has(w.en));
+  if (S.current && !allowed.has(S.current.en)) S.current = null;
+}
+
 $('btnBatchMoveFav').addEventListener('click', () => {
   if (S.favManageSelected.length === 0) return alert('请先勾选单词');
   const targetId = $('favMoveTarget').value;
@@ -1262,6 +1293,7 @@ $('btnBatchMoveFav').addEventListener('click', () => {
     }
   });
   currentFolder.words = currentFolder.words.filter(w => !S.favManageSelected.includes(w.en));
+  pruneFavPoolToCurrentFolder(currentFolder);
   S.favManageSelected = [];
   save(); renderFavManage();
   alert(`✅ 成功转移到 "${targetFolder.name}"`);
@@ -1272,6 +1304,7 @@ $('btnBatchRemoveFav').addEventListener('click', () => {
   if (!confirm(`确定将选中的单词移出当前收藏夹吗？`)) return;
   const folder = getCurrentFav();
   folder.words = folder.words.filter(w => !S.favManageSelected.includes(w.en));
+  pruneFavPoolToCurrentFolder(folder);
   S.favManageSelected = [];
   save(); renderFavManage();
 });
@@ -1449,13 +1482,26 @@ function switchTab(mode) {
     if (S.current == null) draw(); else save();
     return;
   }
-  render();
   if (mode === 'fav') {
     const folder = getCurrentFav();
-    S.favPool = shuffle(folder.words.slice());
-    S.favSeen = [];
-    draw();
-  } else save();
+    // 与 Learn 一致：当前词仍在本夹子且还有剩余池时，保留进度，不重新洗牌。
+    const keepProgress = S.current
+      && S.favPool.length > 0
+      && folder.words.some(w => w.en === S.current.en);
+    if (!keepProgress) {
+      S.favPool = shuffle(folder.words.slice());
+      S.favSeen = [];
+      S.current = null;
+      draw();
+      return;
+    }
+    S.showZh = false;
+    render();
+    save();
+    return;
+  }
+  render();
+  save();
 }
 $('tabLearn').addEventListener('click', ()=>switchTab('learn'));
 $('tabTable').addEventListener('click', ()=>switchTab('table'));
