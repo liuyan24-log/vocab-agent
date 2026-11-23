@@ -1110,11 +1110,16 @@ document.querySelectorAll('.sheet-modal').forEach(modal => {
   });
 });
 
+// 当前收藏夹在搜索框过滤后的词条，保持页面显示顺序。
+function getFilteredFavWords(folder = getCurrentFav()) {
+  const query = $('searchFav').value.trim().toLowerCase();
+  return folder.words.filter(w => w.en.toLowerCase().includes(query) || (w.zh && w.zh.includes(query)));
+}
+
 function renderFavManage() {
   const t = $('favManageContent'); t.innerHTML = '';
   const folder = getCurrentFav();
-  const query = $('searchFav').value.trim().toLowerCase();
-  
+
   $('favManageTitle').textContent = `管理: ${folder.name}`;
   $('favMoveTarget').innerHTML = S.favFolders.filter(f => f.id !== folder.id).map(f => `<option value="${f.id}">${escapeHtml(f.name)}</option>`).join('');
   if (S.favFolders.length <= 1) {
@@ -1123,7 +1128,7 @@ function renderFavManage() {
     $('btnBatchMoveFav').style.display = 'block'; $('favMoveTarget').style.display = 'block';
   }
 
-  const filtered = folder.words.filter(w => w.en.toLowerCase().includes(query) || (w.zh && w.zh.includes(query)));
+  const filtered = getFilteredFavWords(folder);
   const allFilteredSelected = filtered.length > 0 && filtered.every(w => S.favManageSelected.includes(w.en));
   $('btnFavSelectAll').textContent = allFilteredSelected ? '取消全选' : '全选';
 
@@ -1243,8 +1248,7 @@ $('btnBatchAddFav').addEventListener('click', () => {
 
 $('btnFavSelectAll').addEventListener('click', () => {
   const folder = getCurrentFav();
-  const query = $('searchFav').value.trim().toLowerCase();
-  const filtered = folder.words.filter(w => w.en.toLowerCase().includes(query) || (w.zh && w.zh.includes(query)));
+  const filtered = getFilteredFavWords(folder);
   const allFilteredSelected = filtered.length > 0 && filtered.every(w => S.favManageSelected.includes(w.en));
   if (allFilteredSelected) {
     S.favManageSelected = [];
@@ -1254,6 +1258,25 @@ $('btnFavSelectAll').addEventListener('click', () => {
     });
   }
   renderFavManage();
+});
+
+// 按当前过滤顺序勾选前 N 个词（N 超过总数时全选）。
+function selectTopFavWords() {
+  const n = parseInt($('favSelectCount').value, 10);
+  if (!Number.isFinite(n) || n <= 0) return alert('请输入有效数字');
+  const filtered = getFilteredFavWords();
+  filtered.slice(0, n).forEach(w => {
+    if (!S.favManageSelected.includes(w.en)) S.favManageSelected.push(w.en);
+  });
+  renderFavManage();
+}
+
+$('btnFavSelectTopN').addEventListener('click', selectTopFavWords);
+$('favSelectCount').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    selectTopFavWords();
+  }
 });
 
 $('btnShuffleFav').addEventListener('click', () => {

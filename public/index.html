@@ -74,6 +74,8 @@
       <input type="text" class="search-bar" id="searchFav" placeholder="🔍 搜索当前夹子...">
       <div class="table-header-row fav-manage-actions">
         <button class="btn-small" id="btnFavSelectAll">全选</button>
+        <input type="number" id="favSelectCount" placeholder="N" style="width: 50px; margin: 0; padding: 4px;" min="1">
+        <button class="btn-small" id="btnFavSelectTopN" style="color: var(--blue); border-color: var(--blue);">选前 N 个</button>
         <button class="btn-small" id="btnShuffleFav" style="color: var(--yellow); border-color: var(--yellow);">🔀 打乱</button>
         <select class="batch-select" id="favMoveTarget" style="flex: 1;"></select>
         <button class="btn-small" id="btnBatchMoveFav" style="color: var(--blue); border-color: var(--blue);">转移</button>
